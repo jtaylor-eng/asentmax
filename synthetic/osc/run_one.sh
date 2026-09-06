@@ -30,6 +30,19 @@ case $task in
 esac
 [ -n "$MAX_STEPS_OVERRIDE" ] && STEPS=$MAX_STEPS_OVERRIDE
 
+# ---------------- stage data to node-local NVMe (random line seeks on GPFS are ~20x slower) ----------------
+if [ -n "${TMPDIR:-}" ] && [ -d "$TMPDIR" ]; then
+  REL=$(python3 -c "import sys;print('$DATA'.replace('\${oc.env:DATA_PATH}/','').rstrip('/'))")
+  SRC="$DATA_ROOT/$REL"; DST="$TMPDIR/data/$REL"
+  if [ ! -f "$DST.STAGED" ]; then
+    t0=$(date +%s); mkdir -p "$DST"
+    # copy data + prebuilt .idx (built once on scratch by the smoke jobs; else built locally on NVMe)
+    cp "$SRC"/* "$DST"/ && touch "$DST.STAGED"
+    log "staged $REL to \$TMPDIR in $(( $(date +%s) - t0 ))s ($(du -sh "$DST" | cut -f1))"
+  fi
+  export DATA_PATH="$TMPDIR/data"
+fi
+
 # ---------------- method overrides (all NAPE) ----------------
 case $method in
   softmax)   OV=(model.net.entmax_alpha=1.0 ++model.net.attn_implementation=flash_attention_2 ++model.net.use_fast_attn=True
