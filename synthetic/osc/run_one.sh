@@ -65,9 +65,14 @@ else
     RESUME=(trainer.max_epochs=1)
   fi
   log "TRAIN start steps=$STEPS lr=$lr seed=$seed"
+  SMOKE_EXTRA=()
+  if [ -n "$MAX_STEPS_OVERRIDE" ]; then
+    # short smoke run: validate a few times so the checkpoint callback fires
+    SMOKE_EXTRA=(trainer.val_check_interval=$((STEPS / 3)) ++trainer.limit_val_batches=2)
+  fi
   python3 src/train.py "experiment=entmax/$task" logger=csv_wandb_offline task_name="t1_${task}_${method}_s${seed}_lr${lr}" \
     test=False seed=$seed model.optimizer.lr=$lr data.data_provider.path="$DATA" \
-    "++callbacks.model_checkpoint.dirpath=$CKPT_DIR" ++trainer.max_steps=$STEPS "${RESUME[@]}" \
+    "++callbacks.model_checkpoint.dirpath=$CKPT_DIR" ++trainer.max_steps=$STEPS "${RESUME[@]}" "${SMOKE_EXTRA[@]}" \
     "++logger.wandb.project=asentmax-table1" "++logger.wandb.name=${task}-${method}-s${seed}-lr${lr}" \
     "++logger.wandb.group=${task}-${method}" "++logger.wandb.tags=[${task},${method},seed${seed}]" \
     "${OV[@]}" >> "$RUN/train.log" 2>&1
@@ -78,13 +83,16 @@ fi
 
 # ---------------- 2) pick best checkpoint (paper protocol: best on validation monitor) ----------------
 BEST=$(find "$CKPT_DIR" -name "*.ckpt" ! -name last.ckpt | head -1)
-if [ -z "$BEST" ]; then BEST="$CKPT_DIR/last.ckpt"; log "WARNING: no best ckpt, using last"; fi
+if [ -z "$BEST" ]; then
+  if [ -f "$CKPT_DIR/last.ckpt" ]; then BEST="$CKPT_DIR/last.ckpt"; log "WARNING: no best ckpt, using last"
+  else log "ERROR: no checkpoint in $CKPT_DIR"; exit 3; fi
+fi
 log "eval ckpt: $BEST"
 echo "$BEST" > "$RUN/best_ckpt.txt"
 
 # ---------------- 3) OOD ladder with early-stop on exact 0.0 ----------------
 LADDER="$RUN/ladder.tsv"
-if [ -f "$LADDER" ] && [ "$(wc -l < "$LADDER")" -ge "${#STEMS[@]}" ]; then log "ladder already done"; else
+if [ -f "$LADDER" ] && [ "$(wc -l < "$LADDER")" -ge "${#STEMS[@]}" ] && ! grep -q ERR "$LADDER"; then log "ladder already done"; else
 : > "$LADDER"
 stopped=0
 for i in "${!STEMS[@]}"; do
@@ -110,6 +118,7 @@ print("ERR" if acc is None else f"{acc*100:.1f}")
 PY
 )
   printf "%s\t%s\t%s\t%s\n" "$label" "$n" "$stem" "$acc" >> "$LADDER"; log "  $label ($n): $acc%"
+  if [ "$acc" = "ERR" ]; then log "ERROR: eval failed at $stem (see $RUN/eval_${stem}.log)"; exit 4; fi
   [ "$acc" = "0.0" ] && stopped=1
 done
 fi
