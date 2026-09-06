@@ -40,7 +40,7 @@ case $task in
           --mdps_seq_len "64 128 256 512 1024 4096 16384 65536" --mdps_vary_len "0 0 0 0 0 0 0 0") ;;
 esac
 
-if [ -f "$OUT/DATA_DONE" ]; then echo "already done"; exit 0; fi
+if [ -f "$OUT.DATA_DONE" ]; then echo "already done"; exit 0; fi
 mkdir -p "$OUT"
 python3 $GEN --out_dir "$OUT" --dev_size 100 --test_size 100 "${ARGS[@]}"
 
@@ -52,5 +52,5 @@ case $task in
   mqmtar) rm -f "$OUT"/validation_4_1024.* "$OUT"/validation_5_4096.* "$OUT"/validation_6_16384.* "$OUT"/validation_7_65536.* ;;
 esac
 ls -la "$OUT" | grep -E "\.(src|trg)$"
-touch "$OUT/DATA_DONE"
+touch "$OUT.DATA_DONE"
 echo "[$(date)] done"
