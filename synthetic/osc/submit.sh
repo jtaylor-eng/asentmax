@@ -21,7 +21,8 @@ fi
 
 cd "$REPO"; git diff --quiet || { echo "ERROR: dirty tree in $REPO; commit/stash first" >&2; exit 1; }
 COMMIT=$(git rev-parse --short HEAD)
-for task in sort reverse copy mqmtar; do
+TASKS=(${TASKS:-sort reverse copy mqmtar})
+for task in "${TASKS[@]}"; do
   MAN="$RESULTS_ROOT/manifests/${MODE}_${task}_${COMMIT}.txt"; : > "$MAN"
   for m in "${METHODS[@]}"; do for s in $SEEDS; do for lr in ${LRS[$task]}; do
     echo "$task $m $s $lr" >> "$MAN"
