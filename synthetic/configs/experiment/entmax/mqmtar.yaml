@@ -16,7 +16,7 @@ logger:
 
 callbacks:
   model_checkpoint:
-    monitor: "val/acc/dataloader_idx_4"
+    monitor: "val/acc/dataloader_idx_3"
 
 model:
   loss_type: target
@@ -40,7 +40,7 @@ model:
     instance:
 #      _target_: transformers.get_polynomial_decay_schedule_with_warmup
 #      power: 3
-      num_warmup_steps: 20000
+      num_warmup_steps: 10000
       num_training_steps: 390625
 
 trainer:

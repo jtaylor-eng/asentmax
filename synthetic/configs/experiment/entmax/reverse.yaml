@@ -16,7 +16,7 @@ logger:
 
 callbacks:
   model_checkpoint:
-    monitor: "val/acc/dataloader_idx_3"
+    monitor: "val/acc/dataloader_idx_4"
 
 model:
   loss_type: target
@@ -30,7 +30,7 @@ model:
     num_hidden_layers: 6
     hidden_size: 256
     head_dim: 32
-    intermediate_size: 1024
+    intermediate_size: 512
 
   generation_multiplier: 2.2
   generation:
@@ -38,7 +38,7 @@ model:
 
   scheduler:
     instance:
-      num_warmup_steps: 20000
+      num_warmup_steps: 10000
       num_training_steps: 234375
 
 trainer:

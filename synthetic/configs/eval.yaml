@@ -11,6 +11,9 @@ defaults:
   - extras: default
   - hydra: default
 
+  # allow experiment configs (carry architecture overrides) to compose in eval too
+  - experiment: null
+
 trainer:
   accelerator: gpu
   devices: [0]

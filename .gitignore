@@ -223,3 +223,11 @@ outputs/
 .ipynb_checkpoints/
 # Claude Code
 .claude/
+# experiment artifacts (never commit)
+synthetic/data/
+synthetic/results_*/
+synthetic/logs/
+synthetic/reeval_last.log
+synthetic/wandb/
+*.ckpt
+checkpoints/
