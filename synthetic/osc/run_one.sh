@@ -113,8 +113,8 @@ for i in "${!STEMS[@]}"; do
   if [ $stopped -eq 1 ]; then
     printf "%s\t%s\t%s\tSKIPPED\n" "$label" "$n" "$stem" >> "$LADDER"; log "  $label ($n): SKIPPED"; continue
   fi
-  # mqmtar at >=16384: batch 1 to bound KV/prefill memory
-  EXTRA=(); if [ "$n" -ge 16384 ]; then EXTRA=(data.batch_config.test.size=1); fi
+  # mqmtar at >=16384: batch 1 to bound KV/prefill memory; stieltjes eager (O(N^2) fp32 solver) at >=2048 too
+  EXTRA=(); if [ "$n" -ge 16384 ] || { [[ $method == *stieltjes ]] && [ "$n" -ge 2048 ]; }; then EXTRA=(data.batch_config.test.size=1); fi
   python3 src/eval.py "experiment=entmax/$task" logger=csv task_name="t1e_${task}_${method}_s${seed}_lr${lr}_${stem}" \
     +seed=$seed data.data_provider.path="$DATA" "++data.data_provider.file_subset.test=[$stem]" \
     "${EXTRA[@]}" "${OV[@]}" ckpt_path="'$BEST'" > "$RUN/eval_${stem}.log" 2>&1
