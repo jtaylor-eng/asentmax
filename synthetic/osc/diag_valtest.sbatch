@@ -22,10 +22,10 @@ OV=(model.net.entmax_alpha=1.5 ++model.net.attn_implementation=eager ++model.net
 for ck in "epoch=0-step=11718.ckpt" "last.ckpt"; do
 for spec in "test_3_256 4" "test_3_256 32" "test_3_256 1" "test_9_256v 32" "test_9_256v 4"; do
   set -- $spec; stem=$1; bs=$2
-  python3 src/eval.py experiment=entmax/reverse logger=csv task_name=diag_${ck%%.*}_${stem}_bs$bs +seed=1 \
+  python3 src/eval.py experiment=entmax/reverse logger=csv task_name=diag_$(echo ${ck%%.*} | tr -d "=")_${stem}_bs$bs +seed=1 \
     'data.data_provider.path=${oc.env:DATA_PATH}/reverse/x/' "++data.data_provider.file_subset.test=[$stem]" \
     data.batch_config.test.size=$bs "${OV[@]}" ckpt_path="'$RUN/checkpoints/$ck'" > $TMPDIR/e.log 2>&1
-  acc=$(tail -1 $(find logs/diag_${ck%%.*}_${stem}_bs$bs -name metrics.csv | tail -1) | cut -d, -f4)
+  acc=$(tail -1 $(find logs/diag_$(echo ${ck%%.*} | tr -d "=")_${stem}_bs$bs -name metrics.csv | tail -1) | cut -d, -f4)
   echo "ckpt=$ck file=$stem bs=$bs acc=$acc"
 done; done
 echo DIAG_DONE
