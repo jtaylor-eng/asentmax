@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
-"""Aggregate Table-1 results from $RESULTS_ROOT with the paper's selection protocol.
+"""Aggregate Table-1 results with the paper's selection protocol.
 
-For each (task, method): among all (seed, lr) runs, pick the run whose best-checkpoint
-validation monitor value is highest (ties -> higher mean OOD test acc, then lower lr).
-Sort uses BLEU@4x (val idx_2); other tasks use exact-match acc @8x (val idx_3/4).
-Emits: markdown table vs paper, per-cell provenance, and a mean±std-over-seeds row at the
-selected LR. Usage: aggregate.py [--results DIR] [--status]
+Per run: primary monitor = exact-match acc @8x (sort: BLEU @4x). If the primary monitor
+is degenerate (never > 0), fall back per the paper to BLEU @4x then @2x. The checkpoint
+evaluated is:
+  - the saved best-by-primary ckpt (ladder.tsv) when the primary monitor is informative;
+  - last.ckpt (ladder_last.tsv) when the primary was degenerate, since the callback then
+    kept the *first* checkpoint on ties (a known artifact) and the fallback pick is not a
+    saved checkpoint. This is noted per cell.
+Per (task, method): the single run with the highest selection value (primary if informative,
+else fallback BLEU) is reported. Also prints all runs and mean±std over seeds at the
+selected LR.
 """
 import argparse, csv, glob, os, re, statistics, sys
 from collections import defaultdict
@@ -16,30 +21,69 @@ PAPER = {
   "copy":    (["ID","2x","4x","8x","16x","32x","64x"], {"softmax":[100,100,99.9,99.9,99.4,96.1,85.5], "asentmax":[100,100,99.9,99.7,99.4,96.3,86.6]}),
   "mqmtar":  (["ID","2x","4x","16x","64x","256x","1024x"], {"softmax":[100,100,100,99.5,97.8,80.2,3.0], "asentmax":[100,100,100,99.7,99.6,99.0,95.3]}),
 }
-MONITOR = {"sort":"val/bleu_epoch/dataloader_idx_2", "reverse":"val/acc_epoch/dataloader_idx_4",
+PRIMARY = {"sort":"val/bleu_epoch/dataloader_idx_2", "reverse":"val/acc_epoch/dataloader_idx_4",
            "copy":"val/acc_epoch/dataloader_idx_3", "mqmtar":"val/acc_epoch/dataloader_idx_3"}
+FALLBACK = {"sort":["val/bleu_epoch/dataloader_idx_1"],
+            "reverse":["val/bleu_epoch/dataloader_idx_3","val/bleu_epoch/dataloader_idx_2"],
+            "copy":["val/bleu_epoch/dataloader_idx_2","val/bleu_epoch/dataloader_idx_1"],
+            "mqmtar":["val/bleu_epoch/dataloader_idx_2","val/bleu_epoch/dataloader_idx_1"]}
 METHOD_ORDER = ["softmax","asentmax","stieltjes","asstieltjes"]
+LOCAL = {  # previous single-seed 4070 run (from synthetic/TABLE1_REPRODUCED_FIXED.md)
+  "sort":    {"softmax":[100,0,"skip","skip"], "asentmax":[100,96,69,0]},
+  "reverse": {"softmax":[100,76,0,"skip","skip"], "asentmax":[100,100,100,92,36]},
+  "copy":    {"softmax":[100,100,100,64,0,"skip","skip"], "asentmax":[100,100,100,100,100,94,74]},
+  "mqmtar":  {"softmax":[100,98,99,83,54,"-","-"], "asentmax":[100,100,100,100,100,"-","-"]},
+}
 
 def read_ladder(p):
     d = {}
+    if not os.path.exists(p): return d
     for line in open(p):
         parts = line.rstrip("\n").split("\t")
         if len(parts) >= 4: d[parts[0]] = parts[3]
     return d
 
-def find_metrics_csv(project_root, task, method, seed, lr):
-    pat = os.path.join(project_root, "logs", f"t1_{task}_{method}_s{seed}_lr{lr}", "runs", "*", "csv", "version_0", "metrics.csv")
-    fs = sorted(glob.glob(pat)); return fs
+def series(rows, key):
+    return [(int(r["step"]), float(r[key])) for r in rows if r.get(key) not in (None, "")]
 
-def best_val(project_root, task, method, seed, lr):
-    key = MONITOR[task]; best = None; step = None
-    for f in find_metrics_csv(project_root, task, method, seed, lr):
-        for row in csv.DictReader(open(f)):
-            v = row.get(key)
-            if v not in (None, ""):
-                v = float(v)
-                if best is None or v > best: best, step = v, int(row.get("step", 0))
-    return best, step
+def collect(results, project_root):
+    runs = defaultdict(list)
+    for run in sorted(glob.glob(os.path.join(results, "*", "*", "s*_lr*"))):
+        task, method, sl = run.split(os.sep)[-3:]
+        if task not in PAPER: continue
+        seed, lr = re.match(r"s(\d+)_lr(.+)", sl).groups()
+        csvs = sorted(glob.glob(os.path.join(project_root, "logs", f"t1_{task}_{method}_s{seed}_lr{lr}", "runs", "*", "csv", "version_0", "metrics.csv")))
+        if not csvs: continue
+        rows = list(csv.DictReader(open(csvs[-1])))
+        prim = series(rows, PRIMARY[task])
+        tl = [float(r["train/loss_step"]) for r in rows if r.get("train/loss_step")]
+        diverged = any(x != x for x in tl[-50:]) if tl else False
+        if not prim: continue
+        degenerate = max(v for _, v in prim) == 0.0
+        sel_key, sel_val, sel_step = PRIMARY[task], None, None
+        if not degenerate:
+            sel_step, sel_val = max(prim, key=lambda t: (t[1], t[0]))
+        else:
+            for fb in FALLBACK[task]:
+                s = series(rows, fb)
+                if s and max(v for _, v in s) > 0:
+                    sel_key = fb; sel_step, sel_val = max(s, key=lambda t: (t[1], t[0])); break
+        ladder_file = "ladder_last.tsv" if degenerate else "ladder.tsv"
+        lad = read_ladder(os.path.join(run, ladder_file))
+        if degenerate and not lad:  # re-ladder not done yet; fall back to what exists
+            lad = read_ladder(os.path.join(run, "ladder.tsv")); ladder_file = "ladder.tsv (pending last)"
+        labels = PAPER[task][0]
+        n_expected = 5 if (method.endswith("stieltjes") and task == "mqmtar") else len(labels)
+        complete = sum(l in lad and lad[l] not in ("ERR",) for l in labels) >= n_expected
+        vals = [lad.get(l, "-") for l in labels]
+        best = glob.glob(os.path.join(run, "checkpoints", "epoch=*.ckpt"))
+        best_step = int(re.search(r"step=(\d+)", best[0]).group(1)) if best else None
+        used_step = prim[-1][0] if degenerate else best_step
+        runs[(task, method)].append(dict(seed=seed, lr=lr, vals=vals, sel_key=sel_key, sel_val=sel_val, sel_step=sel_step,
+            degenerate=degenerate, diverged=diverged, complete=complete, ladder_file=ladder_file, used_step=used_step, dir=run))
+    return runs
+
+def fmt(v): return "skip" if v == "SKIPPED" else str(v)
 
 def main():
     ap = argparse.ArgumentParser()
@@ -48,69 +92,53 @@ def main():
     ap.add_argument("--status", action="store_true")
     ap.add_argument("--out", default=None)
     a = ap.parse_args()
-    root = a.results
-    runs = defaultdict(list)   # (task, method) -> list of dict
-    for ladder in sorted(glob.glob(os.path.join(root, "*", "*", "s*_lr*", "ladder.tsv"))):
-        run_dir = os.path.dirname(ladder)
-        task, method, sl = run_dir.split(os.sep)[-3:]
-        m = re.match(r"s(\d+)_lr(.+)", sl); seed, lr = m.group(1), m.group(2)
-        lad = read_ladder(ladder)
-        labels = PAPER[task][0]
-        complete = all(l in lad for l in labels) or (method.endswith("stieltjes") and task == "mqmtar" and all(l in lad for l in labels[:5]))
-        bv, bstep = best_val(a.project_root, task, method, seed, lr)
-        vals = [lad.get(l, "-") for l in labels]
-        nums = [float(v) for v in vals if v not in ("-", "SKIPPED", "ERR")]
-        runs[(task, method)].append(dict(seed=seed, lr=lr, ladder=lad, vals=vals, best_val=bv, best_step=bstep,
-                                         mean_ood=(statistics.mean(nums[1:]) if len(nums) > 1 else 0.0), complete=complete, dir=run_dir))
-
+    runs = collect(a.results, a.project_root)
     if a.status:
-        tot = 0
         for task in PAPER:
             for method in METHOD_ORDER:
                 for r in runs.get((task, method), []):
-                    tot += 1
-                    print(f"{task:<8}{method:<12}s{r['seed']} lr={r['lr']:<6} val={r['best_val'] if r['best_val'] is not None else '-':<8} "
-                          f"{'done' if r['complete'] else 'partial'}  " + " ".join(f"{v:>6}" for v in r["vals"]))
-        print(f"{tot} runs with ladders")
+                    sv = f"{r['sel_val']:.3f}" if r["sel_val"] is not None else "-"
+                    print(f"{task:<8}{method:<11}s{r['seed']} lr={r['lr']:<6} {r['sel_key'].split('/')[1][:4]}{r['sel_key'][-1]}={sv:<6} "
+                          f"{'DEGEN' if r['degenerate'] else '     '} {'NaN' if r['diverged'] else '   '} {r['ladder_file']:<24} "
+                          + " ".join(f"{fmt(v):>5}" for v in r["vals"]))
         return
-
-    out = []
-    def P(s=""): out.append(s)
-    P("# Table 1 reproduction (OSC A100, paper protocol)\n")
-    P("Selection: per (task, method), the single run (over seeds x LRs) with the highest best-checkpoint")
-    P("validation monitor (sort: BLEU@4x; others: exact-match@8x); reported numbers are that run's")
-    P("test ladder from its best checkpoint. 100 test samples/length. `skip` = early-stopped after an exact 0.0.\n")
+    out = []; P = out.append
+    P("# Table 1 reproduction on OSC (A100) — paper protocol, 2 seeds x 3 LRs (MQMTAR: 2 LRs)\n")
     for task, (labels, paper) in PAPER.items():
         P(f"## {task}\n")
-        P("| method | " + " | ".join(labels) + " | selected (seed, lr, val, step) |")
+        P("| method | " + " | ".join(labels) + " | selected run |")
         P("|---|" + "---:|" * len(labels) + "---|")
         for method in METHOD_ORDER:
             rs = [r for r in runs.get((task, method), []) if r["complete"]]
             if method in paper:
-                P(f"| {method} (paper) | " + " | ".join(f"{v}" for v in paper[method]) + " | best of 3 seeds x LRs, 1K samples |")
+                P(f"| {method} (paper) | " + " | ".join(str(v) for v in paper[method]) + " | best of 3 seeds x LRs, 1K samples |")
+            if method in LOCAL[task]:
+                P(f"| {method} (local 4070, 1 seed, last.ckpt) | " + " | ".join(str(v) for v in LOCAL[task][method]) + " | README recipe LR |")
             if not rs:
-                if runs.get((task, method)): P(f"| {method} (ours) | " + " | ".join(["…"] * len(labels)) + f" | {len(runs[(task, method)])} runs in progress |")
+                n = len(runs.get((task, method), []))
+                if n: P(f"| {method} (ours) | " + " | ".join(["…"] * len(labels)) + f" | {n} runs, ladders pending |")
                 continue
-            rs.sort(key=lambda r: (-(r["best_val"] if r["best_val"] is not None else -1), -r["mean_ood"], float(r["lr"])))
+            rs.sort(key=lambda r: (-(r["sel_val"] if r["sel_val"] is not None else -1), float(r["lr"])))
             b = rs[0]
-            cells = ["skip" if v == "SKIPPED" else v for v in b["vals"]]
-            P(f"| {method} (ours) | " + " | ".join(cells) + f" | s{b['seed']}, lr={b['lr']}, val={b['best_val']:.3f}@{b['best_step']} |")
-            # mean±std over seeds at the selected LR
+            note = f"s{b['seed']}, lr={b['lr']}, {b['sel_key'].split('/')[1][:4]}@{b['sel_key'][-1]}={b['sel_val']:.3f}"
+            note += ", last.ckpt (8x monitor degenerate)" if b["degenerate"] else f", ckpt step {b['used_step']}"
+            P(f"| **{method} (ours)** | " + " | ".join(fmt(v) for v in b["vals"]) + f" | {note} |")
             same_lr = [r for r in rs if r["lr"] == b["lr"]]
             if len(same_lr) > 1:
                 ms = []
-                for i, l in enumerate(labels):
+                for i in range(len(labels)):
                     xs = [float(r["vals"][i]) if r["vals"][i] not in ("-", "SKIPPED", "ERR") else 0.0 for r in same_lr]
-                    ms.append(f"{statistics.mean(xs):.1f}±{statistics.pstdev(xs):.1f}")
-                P(f"| {method} (ours, mean±std, {len(same_lr)} seeds @ lr={b['lr']}) | " + " | ".join(ms) + " | |")
-        P()
+                    ms.append(f"{statistics.mean(xs):.0f}±{statistics.pstdev(xs):.0f}")
+                P(f"| {method} (ours, mean±std over {len(same_lr)} seeds @ lr={b['lr']}) | " + " | ".join(ms) + " | |")
+        P("")
         P("<details><summary>all runs</summary>\n")
-        P("| method | seed | lr | val monitor | " + " | ".join(labels) + " |")
-        P("|---|---|---|---|" + "---:|" * len(labels))
+        P("| method | seed | lr | selection metric | ckpt | " + " | ".join(labels) + " |")
+        P("|---|---|---|---|---|" + "---:|" * len(labels))
         for method in METHOD_ORDER:
-            for r in sorted(runs.get((task, method), []), key=lambda r: (r["lr"], r["seed"])):
-                bv = f"{r['best_val']:.3f}" if r["best_val"] is not None else "-"
-                P(f"| {method} | {r['seed']} | {r['lr']} | {bv} | " + " | ".join(("skip" if v == "SKIPPED" else v) for v in r["vals"]) + " |")
+            for r in sorted(runs.get((task, method), []), key=lambda r: (float(r["lr"]), r["seed"])):
+                sv = f"{r['sel_key'].split('/')[1][:4]}@{r['sel_key'][-1]}={r['sel_val']:.3f}" if r["sel_val"] is not None else "-"
+                ck = ("last" if r["degenerate"] else f"best@{r['used_step']}") + (" NaN-diverged" if r["diverged"] else "")
+                P(f"| {method} | {r['seed']} | {r['lr']} | {sv} | {ck} | " + " | ".join(fmt(v) for v in r["vals"]) + " |")
         P("\n</details>\n")
     text = "\n".join(out)
     if a.out: open(a.out, "w").write(text); print("wrote", a.out)
