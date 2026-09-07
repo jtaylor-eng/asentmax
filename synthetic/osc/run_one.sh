@@ -95,16 +95,24 @@ else
 fi
 
 # ---------------- 2) pick best checkpoint (paper protocol: best on validation monitor) ----------------
+# CKPT_OVERRIDE=last: evaluate the fully-trained last.ckpt instead (used when the primary
+# monitor was degenerate and the paper's BLEU fallback pick was not among the saved ckpts).
+LADDER_NAME="ladder.tsv"
+if [ "${CKPT_OVERRIDE:-}" = "last" ]; then
+  BEST="$CKPT_DIR/last.ckpt"; LADDER_NAME="ladder_last.tsv"
+  [ -f "$BEST" ] || { log "ERROR: no last.ckpt"; exit 3; }
+else
 BEST=$(find "$CKPT_DIR" -name "*.ckpt" ! -name last.ckpt | head -1)
 if [ -z "$BEST" ]; then
   if [ -f "$CKPT_DIR/last.ckpt" ]; then BEST="$CKPT_DIR/last.ckpt"; log "WARNING: no best ckpt, using last"
   else log "ERROR: no checkpoint in $CKPT_DIR"; exit 3; fi
 fi
+fi
 log "eval ckpt: $BEST"
-echo "$BEST" > "$RUN/best_ckpt.txt"
+echo "$BEST" > "$RUN/best_ckpt${CKPT_OVERRIDE:+_$CKPT_OVERRIDE}.txt"
 
 # ---------------- 3) OOD ladder with early-stop on exact 0.0 ----------------
-LADDER="$RUN/ladder.tsv"
+LADDER="$RUN/$LADDER_NAME"
 if [ -f "$LADDER" ] && [ "$(wc -l < "$LADDER")" -ge "${#STEMS[@]}" ] && ! grep -q ERR "$LADDER"; then log "ladder already done"; else
 : > "$LADDER"
 stopped=0
@@ -115,10 +123,10 @@ for i in "${!STEMS[@]}"; do
   fi
   # mqmtar at >=16384: batch 1 to bound KV/prefill memory; stieltjes eager (O(N^2) fp32 solver) at >=2048 too
   EXTRA=(); if [ "$n" -ge 16384 ] || { [[ $method == *stieltjes ]] && [ "$n" -ge 2048 ]; }; then EXTRA=(data.batch_config.test.size=1); fi
-  python3 src/eval.py "experiment=entmax/$task" logger=csv task_name="t1e_${task}_${method}_s${seed}_lr${lr}_${stem}" \
+  python3 src/eval.py "experiment=entmax/$task" logger=csv task_name="t1e_${task}_${method}_s${seed}_lr${lr}_${stem}${CKPT_OVERRIDE:+_$CKPT_OVERRIDE}" \
     +seed=$seed data.data_provider.path="$DATA" "++data.data_provider.file_subset.test=[$stem]" \
-    "${EXTRA[@]}" "${OV[@]}" ckpt_path="'$BEST'" > "$RUN/eval_${stem}.log" 2>&1
-  csv=$(find "$PROJECT_ROOT/logs/t1e_${task}_${method}_s${seed}_lr${lr}_${stem}" -name metrics.csv 2>/dev/null | sort | tail -1)
+    "${EXTRA[@]}" "${OV[@]}" ckpt_path="'$BEST'" > "$RUN/eval_${stem}${CKPT_OVERRIDE:+_$CKPT_OVERRIDE}.log" 2>&1
+  csv=$(find "$PROJECT_ROOT/logs/t1e_${task}_${method}_s${seed}_lr${lr}_${stem}${CKPT_OVERRIDE:+_$CKPT_OVERRIDE}" -name metrics.csv 2>/dev/null | sort | tail -1)
   acc=$(python3 - "$csv" <<'PY'
 import sys, csv
 acc=None
