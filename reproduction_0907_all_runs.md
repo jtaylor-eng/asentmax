@@ -65,7 +65,7 @@
 | softmax | 2 | 4e-4 | bleu@3=0.126 | last | 100.0 | 31.0 | 0.0 | skip | skip |
 | softmax | 1 | 8e-4 | bleu@3=0.193 | last | 100.0 | 38.0 | 0.0 | skip | skip |
 | softmax | 2 | 8e-4 | bleu@3=0.142 | last | 100.0 | 67.0 | 0.0 | skip | skip |
-| asentmax | 1 | 2e-4 | bleu@3=0.544 | last | 100.0 | 100.0 | 99.0 | 1.0 | - |
+| asentmax | 1 | 2e-4 | bleu@3=0.544 | last | 100.0 | 100.0 | 99.0 | 1.0 | 0.0 |
 | asentmax | 2 | 2e-4 | bleu@3=0.561 | last | 100.0 | 100.0 | 98.0 | 0.0 | skip |
 | asentmax | 1 | 4e-4 | bleu@3=0.728 | last | 100.0 | 100.0 | 100.0 | 53.0 | 0.0 |
 | asentmax | 2 | 4e-4 | bleu@3=0.632 | last | 100.0 | 100.0 | 99.0 | 5.0 | 0.0 |
@@ -126,27 +126,30 @@
 |---|---:|---:|---:|---:|---:|---:|---:|---|
 | softmax (paper) | 100 | 100 | 100 | 99.5 | 97.8 | 80.2 | 3.0 | best of 3 seeds x LRs, 1K samples |
 | softmax (local 4070, 1 seed, last.ckpt) | 100 | 98 | 99 | 83 | 54 | - | - | README recipe LR |
-| softmax (ours) | … | … | … | … | … | … | … | 4 runs, ladders pending |
+| **softmax (ours)** | 100.0 | 100.0 | 97.0 | 90.0 | 48.0 | 0.0 | skip | s1, lr=1e-4, acc_@3=1.000, ckpt step 136717 |
+| softmax (ours, mean±std over 2 seeds @ lr=1e-4) | 100±0 | 100±0 | 98±2 | 91±1 | 55±7 | 0±0 | 0±0 | |
 | asentmax (paper) | 100 | 100 | 100 | 99.7 | 99.6 | 99.0 | 95.3 | best of 3 seeds x LRs, 1K samples |
 | asentmax (local 4070, 1 seed, last.ckpt) | 100 | 100 | 100 | 100 | 100 | - | - | README recipe LR |
-| asentmax (ours) | … | … | … | … | … | … | … | 4 runs, ladders pending |
-| stieltjes (ours) | … | … | … | … | … | … | … | 4 runs, ladders pending |
+| **asentmax (ours)** | 0.0 | skip | skip | skip | skip | skip | skip | s1, lr=1e-4, bleu@2=0.065, last.ckpt (8x monitor degenerate) |
+| asentmax (ours, mean±std over 2 seeds @ lr=1e-4) | 0±0 | 0±0 | 0±0 | 0±0 | 0±0 | 0±0 | 0±0 | |
+| **stieltjes (ours)** | 100.0 | 100.0 | 100.0 | 99.0 | 65.0 | - | - | s1, lr=2e-4, acc_@3=1.000, ckpt step 234372 |
+| stieltjes (ours, mean±std over 2 seeds @ lr=2e-4) | 100±0 | 100±0 | 100±0 | 100±0 | 76±10 | 0±0 | 0±0 | |
 
 <details><summary>all runs</summary>
 
 | method | seed | lr | selection metric | ckpt | ID | 2x | 4x | 16x | 64x | 256x | 1024x |
 |---|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|
-| softmax | 1 | 1e-4 | acc_@3=0.940 | best@78124 | - | - | - | - | - | - | - |
-| softmax | 2 | 1e-4 | acc_@3=0.800 | best@78124 | - | - | - | - | - | - | - |
-| softmax | 1 | 2e-4 | bleu@2=0.049 | last | - | - | - | - | - | - | - |
-| softmax | 2 | 2e-4 | acc_@3=0.460 | best@78124 | - | - | - | - | - | - | - |
-| asentmax | 1 | 1e-4 | bleu@2=0.058 | last | - | - | - | - | - | - | - |
-| asentmax | 2 | 1e-4 | bleu@2=0.053 | last | - | - | - | - | - | - | - |
-| asentmax | 1 | 2e-4 | bleu@2=0.051 | last | - | - | - | - | - | - | - |
-| asentmax | 2 | 2e-4 | bleu@2=0.045 | last | - | - | - | - | - | - | - |
-| stieltjes | 1 | 1e-4 | bleu@2=0.049 | last | - | - | - | - | - | - | - |
-| stieltjes | 2 | 1e-4 | bleu@2=0.060 | last | - | - | - | - | - | - | - |
-| stieltjes | 1 | 2e-4 | bleu@2=0.052 | last | - | - | - | - | - | - | - |
-| stieltjes | 2 | 2e-4 | bleu@2=0.051 | last | - | - | - | - | - | - | - |
+| softmax | 1 | 1e-4 | acc_@3=1.000 | best@136717 | 100.0 | 100.0 | 97.0 | 90.0 | 48.0 | 0.0 | skip |
+| softmax | 2 | 1e-4 | acc_@3=1.000 | best@214841 | 100.0 | 100.0 | 100.0 | 92.0 | 62.0 | 0.0 | skip |
+| softmax | 1 | 2e-4 | acc_@3=0.980 | best@234372 | 100.0 | 100.0 | 94.0 | 90.0 | 36.0 | 2.0 | 0.0 |
+| softmax | 2 | 2e-4 | acc_@3=1.000 | best@195310 | 100.0 | 100.0 | 99.0 | 97.0 | 68.0 | 1.0 | 0.0 |
+| asentmax | 1 | 1e-4 | bleu@2=0.065 | last | 0.0 | skip | skip | skip | skip | skip | skip |
+| asentmax | 2 | 1e-4 | bleu@2=0.062 | last | 0.0 | skip | skip | skip | skip | skip | skip |
+| asentmax | 1 | 2e-4 | acc_@3=0.010 | best@273434 | 63.0 | 37.0 | 11.0 | 0.0 | skip | skip | skip |
+| asentmax | 2 | 2e-4 | bleu@2=0.045 | last | 0.0 | skip | skip | skip | skip | skip | skip |
+| stieltjes | 1 | 1e-4 | bleu@2=0.076 | last | 0.0 | skip | skip | skip | skip | - | - |
+| stieltjes | 2 | 1e-4 | bleu@2=0.067 | last | 0.0 | skip | skip | skip | skip | - | - |
+| stieltjes | 1 | 2e-4 | acc_@3=1.000 | best@234372 | 100.0 | 100.0 | 100.0 | 99.0 | 65.0 | - | - |
+| stieltjes | 2 | 2e-4 | acc_@3=1.000 | best@214841 | 100.0 | 100.0 | 100.0 | 100.0 | 86.0 | - | - |
 
 </details>
