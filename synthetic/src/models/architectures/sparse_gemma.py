@@ -32,9 +32,11 @@ from ...attention.topk import AttentionNoCache
 from ...attention.stickbreaking import sb_attn
 from ...attention.stickbreaking.sb_attn_layer import decoding_stickbreaking
 from ...attention.stieltjes_eager import stieltjes_normalize
+from ...attention.stieltjes_ref import stieltjes_ref_normalize
 from .gptx_rope import GPTNeoXRotaryEmbedding2
 
 from ...kernels.adasplash.adasplash_no_block_mask import sparse_attn
+from ...kernels.adasplash.triton_stieltjes import stieltjes_attention as triton_stieltjes_attention
 from adasplash import adasplash, adasplash_no_block_mask, triton_entmax
 
 
@@ -236,15 +238,30 @@ class SparseGemma2Attention(Gemma2Attention):
             self.topk_attn = AttentionNoCache(nn.Softmax(-1))
             self.topk_args = {'topk': config.topk_size}
         elif self.attn_type == "stieltjes":
-            # Dense Stieltjes mapping p_j ∝ (λ - s_j)^{-q}, eager path only (no
-            # fused kernel): always materialises q_len x k_len scores, so
-            # use_fast_attn is forced off. NAPE/ALiBi bias and the causal mask
-            # are added to the logits exactly as in the eager entmax path.
+            # Dense Stieltjes mapping p_j ∝ (λ - s_j)^{-q}. NAPE/ALiBi bias and
+            # the causal mask are added to the logits exactly as in the eager
+            # entmax path. `stieltjes_impl` selects the implementation:
+            #   eager  (default): stieltjes_eager.stieltjes_normalize — bracketed
+            #          solver, exact implicit-function gradient.
+            #   ref    : stieltjes_ref (original bisection reference; unnormalised
+            #          weights, λ detached in backward).
+            #   triton : fused flash kernel (normalize=True, ift_grad=True — same
+            #          semantics as eager) for the training / prefill case
+            #          (q_len == k_len, no padding); anything else (decode steps,
+            #          left-padded generation batches) falls back to eager.
+            # All three materialise q_len x k_len scores on the eager path, so
+            # use_fast_attn is forced off.
             self.use_fast_attn = False
             self.stieltjes_q = float(getattr(config, "stieltjes_q", 4.0))
             self.stieltjes_num_iter = int(getattr(config, "stieltjes_num_iter", 30))
+            self.stieltjes_impl = str(getattr(config, "stieltjes_impl", "eager"))
+            if self.stieltjes_impl not in ("eager", "ref", "triton"):
+                raise ValueError(f"unknown stieltjes_impl {self.stieltjes_impl!r}")
             # ALiBi bias is built per call by make_bias_window (see forward).
-            self.attn_func = lambda x: stieltjes_normalize(x, q=self.stieltjes_q, num_iter=self.stieltjes_num_iter)
+            if self.stieltjes_impl == "ref":
+                self.attn_func = lambda x: stieltjes_ref_normalize(x, q=self.stieltjes_q)
+            else:
+                self.attn_func = lambda x: stieltjes_normalize(x, q=self.stieltjes_q, num_iter=self.stieltjes_num_iter)
         elif self.attn_type == "stick-break":
             pass
         else:
@@ -275,6 +292,37 @@ class SparseGemma2Attention(Gemma2Attention):
             query_states[:, -self.num_scaled_heads:] = scaled_queries * attn_scaler
 
         return query_states
+
+    # ---- Stieltjes fused-kernel path -------------------------------------------------
+    def _stieltjes_triton_applicable(self, query_states, key_states, attention_mask) -> bool:
+        """The flash kernel only handles the square, unpadded, causal case
+        (q_len == k_len, every row fully attended up to the diagonal). Training
+        batches are right-padded (pad tokens sit after the real ones and are
+        masked out of the loss, so attending to them or not is irrelevant for
+        the real positions); generation batches are LEFT-padded, and there the
+        mask matters, so fall back to eager. Decode steps (q_len=1) also fall back."""
+        if not query_states.is_cuda or query_states.shape[-2] != key_states.shape[-2]:
+            return False
+        if attention_mask is None:
+            return True
+        # Right padding <=> the first token of every sequence is real. For the
+        # 2D mask that is column 0; for the HF 4D additive causal mask built by
+        # _update_causal_mask it is the (0, 0) entry being 0 (unmasked). Under
+        # left padding both are masked for at least one batch element.
+        if attention_mask.dim() == 2:
+            return bool(attention_mask[:, 0].all())
+        if attention_mask.dim() == 4 and attention_mask.shape[-2] == query_states.shape[-2]:
+            return bool((attention_mask[:, 0, 0, 0] == 0).all())
+        return False
+
+    def _stieltjes_triton_forward(self, query_states, key_states, value_states):
+        q = query_states.contiguous(); k = key_states.contiguous(); v = value_states.contiguous()
+        slopes = self.alibi_slopes.to(q.device) if (self.apply_nape and self.alibi_slopes is not None) else None
+        return triton_stieltjes_attention(
+            q, k, v, causal=True, sm_scale=self.qk_scale, stieltjes_q=self.stieltjes_q,
+            num_iter=self.stieltjes_num_iter, normalize=True, ift_grad=True, solver="nr",
+            alibi_slopes=slopes,
+        )
 
     def forward(
         self,
@@ -329,6 +377,9 @@ class SparseGemma2Attention(Gemma2Attention):
                 )
             elif self.use_fast_attn and self.entmax_alpha == 1:
                 attn_output = self.flash_attention_routine(q_len, query_states, key_states, value_states, attention_mask)
+            elif (self.attn_type == "stieltjes" and self.stieltjes_impl == "triton"
+                  and self._stieltjes_triton_applicable(query_states, key_states, attention_mask)):
+                attn_output = self._stieltjes_triton_forward(query_states, key_states, value_states)
             else:
                 # Eager attention: used when use_fast_attn=False, or as a fallback when
                 # use_fast_attn=True and entmax_alpha > 1 but q_len != k_len (i.e. during generation)

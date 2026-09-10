@@ -57,10 +57,17 @@ case $method in
                  ++model.net.attn_implementation=eager ++model.net.use_fast_attn=False
                  ++model.net.attn_scale_type=adapt-softplus-tanh ++model.net.attn_scale_proj_bias=True
                  ++model.net.apply_rotary=False ++model.net.apply_nape=True) ;;
+  # eager-vs-ref-vs-triton comparison (branch torch_triton_comp): identical config to `stieltjes`
+  # except the implementation of the simplex mapping (see sparse_gemma.py stieltjes_impl).
+  stieltjes_ref|stieltjes_triton)
+             OV=(model.net.entmax_alpha=1.0 ++model.net.attn_type=stieltjes ++model.net.stieltjes_q=4.0 ++model.net.stieltjes_num_iter=30
+                 ++model.net.stieltjes_impl=${method#stieltjes_}
+                 ++model.net.attn_implementation=eager ++model.net.use_fast_attn=False
+                 ++model.net.attn_scale_type=null ++model.net.apply_rotary=False ++model.net.apply_nape=True) ;;
   *) log "unknown method $method"; exit 1 ;;
 esac
 # Stieltjes eager attention can't prefill 16k/65k in memory (O(N^2)); cap its ladder at 4096.
-if [[ $method == *stieltjes ]] && [ "$task" = mqmtar ]; then
+if [[ $method == *stieltjes* ]] && [ "$task" = mqmtar ]; then
   STEMS=(test_0_64 test_1_128 test_2_256 test_4_1024 test_5_4096); LABELS=(ID 2x 4x 16x 64x)
 fi
 
@@ -122,7 +129,7 @@ for i in "${!STEMS[@]}"; do
     printf "%s\t%s\t%s\tSKIPPED\n" "$label" "$n" "$stem" >> "$LADDER"; log "  $label ($n): SKIPPED"; continue
   fi
   # mqmtar at >=16384: batch 1 to bound KV/prefill memory; stieltjes eager (O(N^2) fp32 solver) at >=2048 too
-  EXTRA=(); if [ "$n" -ge 16384 ] || { [[ $method == *stieltjes ]] && [ "$n" -ge 2048 ]; }; then EXTRA=(data.batch_config.test.size=1); fi
+  EXTRA=(); if [ "$n" -ge 16384 ] || { [[ $method == *stieltjes* ]] && [ "$n" -ge 2048 ]; }; then EXTRA=(data.batch_config.test.size=1); fi
   python3 src/eval.py "experiment=entmax/$task" logger=csv task_name="t1e_${task}_${method}_s${seed}_lr${lr}_${stem}${CKPT_OVERRIDE:+_$CKPT_OVERRIDE}" \
     +seed=$seed data.data_provider.path="$DATA" "++data.data_provider.file_subset.test=[$stem]" \
     "${EXTRA[@]}" "${OV[@]}" ckpt_path="'$BEST'" > "$RUN/eval_${stem}${CKPT_OVERRIDE:+_$CKPT_OVERRIDE}.log" 2>&1
