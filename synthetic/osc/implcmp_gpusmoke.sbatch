@@ -13,7 +13,7 @@ nvidia-smi -L
 echo "== kernel test (ALiBi, fp32/bf16)"; python3 tests/test_stieltjes_triton_alibi.py 2>&1 | grep -E "^torch|OK|FAIL|Error" ; echo "rc=${PIPESTATUS[0]}"
 echo "== layer test"; python3 tests/test_stieltjes_impl_layer.py 2>&1 | grep -E "^torch|OK|FAIL|Error" ; echo "rc=${PIPESTATUS[0]}"
 echo "== eager test"; python3 tests/test_stieltjes_eager.py 2>&1 | tail -3
-for impl in eager ref triton; do
+for impl in eager triton; do
   echo "== train smoke $impl"
   t0=$(date +%s)
   python3 src/train.py experiment=entmax/copy logger=csv task_name=implsmoke_$impl test=False seed=1 model.optimizer.lr=5e-4 \

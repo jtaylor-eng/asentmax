@@ -1,4 +1,4 @@
-"""Model-level check for stieltjes_impl in {eager, ref, triton}: a full
+"""Model-level check for stieltjes_impl in {eager, triton}: a full
 SparseGemma2Attention layer on (a) a right-padded training batch and (b) a
 left-padded generation batch, verifying triton==eager (fwd+bwd) and that the
 triton path actually dispatches to the kernel only on (a).
@@ -23,7 +23,7 @@ def make(impl, H=16, D=16):
 
 cfg_e = make("eager"); layer_e = sg.SparseGemma2Attention(cfg_e, 0).to(dev)
 layers = {"eager": layer_e}
-for impl in ["ref", "triton"]:
+for impl in ["triton"]:
     l = sg.SparseGemma2Attention(make(impl), 0).to(dev); l.load_state_dict(layer_e.state_dict()); layers[impl] = l
 
 calls = {"n": 0}
@@ -57,15 +57,14 @@ for dtype in [torch.float32, torch.bfloat16]:
         for impl, layer in layers.items():
             calls["n"] = 0
             res[impl] = run(layer, x, mask, dtype) + (calls["n"],)
-        oe, ge, pe, _ = res["eager"]; ot, gt, pt, nt = res["triton"]; orf, grf, prf, _ = res["ref"]
+        oe, ge, pe, _ = res["eager"]; ot, gt, pt, nt = res["triton"]
         # compare only on real (unmasked) positions
         valid = mask[..., None].float()
         e_o = rel(ot * valid, oe * valid); e_g = rel(gt * valid, ge * valid)
         e_p = max(rel(pt[n], pe[n]) for n in pe)
-        r_o = rel(orf * valid, oe * valid); r_p = max(rel(prf[n], pe[n]) for n in pe)
         tol = 1e-4 if dtype == torch.float32 else 3e-2
         expect_kernel = (pad == "right")
         good = e_o < tol and e_g < tol and e_p < tol and ((nt > 0) == expect_kernel)
         ok &= good
-        print(f"{str(dtype):15s} pad={pad:5s} triton-vs-eager: out={e_o:.1e} dx={e_g:.1e} dparams={e_p:.1e} kernel_calls={nt} (expect {'>0' if expect_kernel else '0'}) | ref-vs-eager: out={r_o:.1e} dparams={r_p:.1e}  {'OK' if good else 'FAIL'}")
+        print(f"{str(dtype):15s} pad={pad:5s} triton-vs-eager: out={e_o:.1e} dx={e_g:.1e} dparams={e_p:.1e} kernel_calls={nt} (expect {'>0' if expect_kernel else '0'})  {'OK' if good else 'FAIL'}")
 print("ALL OK" if ok else "SOME FAILED"); sys.exit(0 if ok else 1)

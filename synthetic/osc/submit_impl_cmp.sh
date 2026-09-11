@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # submit_impl_cmp.sh [smoke|full]
 # Apples-to-apples Stieltjes implementation comparison (branch torch_triton_comp):
-#   stieltjes (eager) vs stieltjes_ref vs stieltjes_triton, sort + copy, seed 1,
+#   stieltjes (triton kernel) vs stieltjes_eager, sort + copy, seed 1,
 #   at the Table-1 Stieltjes-selected LR per task. One Slurm array per task.
 set -euo pipefail
 source "$(dirname "$0")/env.sh"
 MODE=${1:-full}
-METHODS=(stieltjes stieltjes_ref stieltjes_triton)
+METHODS=(stieltjes stieltjes_eager)
 declare -A LR=( [sort]="4e-4" [copy]="5e-4" )
 declare -A WALL=( [sort]="6:00:00" [copy]="4:00:00" )
 SEED=1; STEPS=""

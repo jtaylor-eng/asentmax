@@ -32,7 +32,6 @@ from ...attention.topk import AttentionNoCache
 from ...attention.stickbreaking import sb_attn
 from ...attention.stickbreaking.sb_attn_layer import decoding_stickbreaking
 from ...attention.stieltjes_eager import stieltjes_normalize
-from ...attention.stieltjes_ref import stieltjes_ref_normalize
 from .gptx_rope import GPTNeoXRotaryEmbedding2
 
 from ...kernels.adasplash.adasplash_no_block_mask import sparse_attn
@@ -241,27 +240,23 @@ class SparseGemma2Attention(Gemma2Attention):
             # Dense Stieltjes mapping p_j ∝ (λ - s_j)^{-q}. NAPE/ALiBi bias and
             # the causal mask are added to the logits exactly as in the eager
             # entmax path. `stieltjes_impl` selects the implementation:
-            #   eager  (default): stieltjes_eager.stieltjes_normalize — bracketed
-            #          solver, exact implicit-function gradient.
-            #   ref    : stieltjes_ref (original bisection reference; unnormalised
-            #          weights, λ detached in backward).
-            #   triton : fused flash kernel (normalize=True, ift_grad=True — same
-            #          semantics as eager) for the training / prefill case
-            #          (q_len == k_len, no padding); anything else (decode steps,
-            #          left-padded generation batches) falls back to eager.
-            # All three materialise q_len x k_len scores on the eager path, so
-            # use_fast_attn is forced off.
+            #   triton (default): fused flash kernel (normalize=True,
+            #          ift_grad=True — same semantics as eager, verified to
+            #          1e-6 fwd/bwd) for the square, right-padded case
+            #          (training steps and unpadded prefill); decode steps and
+            #          left-padded generation batches fall back to eager.
+            #   eager : stieltjes_eager.stieltjes_normalize everywhere —
+            #          bracketed solver, exact implicit-function gradient,
+            #          materialises q_len x k_len fp32 scores (OOMs at ~4k).
+            # Both keep use_fast_attn off (the entmax/flash paths don't apply).
             self.use_fast_attn = False
             self.stieltjes_q = float(getattr(config, "stieltjes_q", 4.0))
             self.stieltjes_num_iter = int(getattr(config, "stieltjes_num_iter", 30))
-            self.stieltjes_impl = str(getattr(config, "stieltjes_impl", "eager"))
-            if self.stieltjes_impl not in ("eager", "ref", "triton"):
+            self.stieltjes_impl = str(getattr(config, "stieltjes_impl", "triton"))
+            if self.stieltjes_impl not in ("eager", "triton"):
                 raise ValueError(f"unknown stieltjes_impl {self.stieltjes_impl!r}")
             # ALiBi bias is built per call by make_bias_window (see forward).
-            if self.stieltjes_impl == "ref":
-                self.attn_func = lambda x: stieltjes_ref_normalize(x, q=self.stieltjes_q)
-            else:
-                self.attn_func = lambda x: stieltjes_normalize(x, q=self.stieltjes_q, num_iter=self.stieltjes_num_iter)
+            self.attn_func = lambda x: stieltjes_normalize(x, q=self.stieltjes_q, num_iter=self.stieltjes_num_iter)
         elif self.attn_type == "stick-break":
             pass
         else:
