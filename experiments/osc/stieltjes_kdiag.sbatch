@@ -7,7 +7,7 @@
 # Diagnose the A100 failure of tests/test_stieltjes_triton_alibi.py at (B=1,H=4,N=1024,D=64) fp32.
 set -uo pipefail
 module reset >/dev/null 2>&1 || true
-source /fs/scratch/PAS2836/$USER/asentmax/synthetic/osc/env.sh
+source /fs/scratch/PAS2836/$USER/asentmax/experiments/osc/env.sh
 source "$VENV/bin/activate"
 cd "$PROJECT_ROOT"
 nvidia-smi -L

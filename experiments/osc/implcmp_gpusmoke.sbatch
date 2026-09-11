@@ -6,7 +6,7 @@
 #SBATCH --output=/fs/scratch/PAS2836/%u/asentmax_results/table1/slurm/implcmp_gpusmoke_%j.log
 set -uo pipefail
 module reset >/dev/null 2>&1 || true
-source /fs/scratch/PAS2836/$USER/asentmax/synthetic/osc/env.sh
+source /fs/scratch/PAS2836/$USER/asentmax/experiments/osc/env.sh
 source "$VENV/bin/activate"
 cd "$PROJECT_ROOT"
 nvidia-smi -L

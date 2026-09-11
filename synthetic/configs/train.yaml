@@ -46,3 +46,9 @@ ckpt_path: null
 seed: 12347
 
 compile: False
+
+# extra config-group search path so relocated experiment configs still resolve by
+# group name (e.g. `logger=csv_wandb_offline` now lives in repo-root experiments/logger/)
+hydra:
+  searchpath:
+    - file://${oc.env:PROJECT_ROOT}/../experiments

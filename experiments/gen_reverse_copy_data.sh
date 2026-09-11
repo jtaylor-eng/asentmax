@@ -2,7 +2,7 @@
 # Generate reverse (30M) + copy (20M) datasets matching the repo's data-config path names.
 # Eval sets capped at 100 samples (dev + test), per the sort run.
 set -eu
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/../synthetic"   # scripts relocated to repo-root experiments/; run tree is still synthetic/
 source .venv/bin/activate
 DATA_ROOT="$(pwd)/data"
 GEN=../scripts/generate_data.py

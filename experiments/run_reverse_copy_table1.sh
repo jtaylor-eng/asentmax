@@ -7,7 +7,7 @@
 #       Checkpoints (best + last) are saved per model so the longer OOD lengths can be run later.
 set -u  # (NOT -e: ladder must continue past non-zero evals and handle stops itself)
 
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/../synthetic"   # scripts relocated to repo-root experiments/; run tree is still synthetic/
 source .venv/bin/activate
 export PROJECT_ROOT="$(pwd)"
 export DATA_PATH="$(pwd)/data"

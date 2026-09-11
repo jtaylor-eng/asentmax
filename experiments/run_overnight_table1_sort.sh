@@ -5,7 +5,7 @@
 # skip the next longer length. Test sets capped at 100 samples (data was generated that way).
 set -u  # (NOT -e: we want the ladder to continue past a non-zero eval and handle stops ourselves)
 
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/../synthetic"   # scripts relocated to repo-root experiments/; run tree is still synthetic/
 source .venv/bin/activate
 export PROJECT_ROOT="$(pwd)"
 export DATA_PATH="$(pwd)/data"

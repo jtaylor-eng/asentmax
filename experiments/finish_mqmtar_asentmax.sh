@@ -3,7 +3,7 @@
 # run its eval ladder (capped at 4096), then reassemble all three Table-1 blocks
 # from the existing ladder.tsv files. The other 5 models are already done and untouched.
 set -u
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/../synthetic"   # scripts relocated to repo-root experiments/; run tree is still synthetic/
 source .venv/bin/activate
 export PROJECT_ROOT="$(pwd)"
 export DATA_PATH="$(pwd)/data"

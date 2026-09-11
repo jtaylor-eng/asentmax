@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Local smoke test of the Stieltjes attention row: ~60 train steps + eval at 64/128 on the sort data.
 set -eu
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../../synthetic"   # test relocated to repo-root experiments/tests/; run tree is still synthetic/
 source .venv/bin/activate
 export PROJECT_ROOT="$(pwd)" DATA_PATH="$(pwd)/data" HYDRA_FULL_ERROR=1 TOKENIZERS_PARALLELISM=false HF_HUB_OFFLINE=1
 DATA='${oc.env:DATA_PATH}/sort/40M-tr_32-64_vt_64-4096_vocab_32_FULL/'

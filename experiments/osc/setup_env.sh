@@ -23,7 +23,7 @@ uv pip install --python "$VENV/bin/python" \
   "https://github.com/Dao-AILab/flash-attention/releases/download/v2.6.3/flash_attn-2.6.3+cu123torch2.4cxx11abiFALSE-cp312-cp312-linux_x86_64.whl"
 uv pip install --python "$VENV/bin/python" -r "$REPO/synthetic/requirements.txt" wandb hydra-colorlog
 
-echo "== HF: model config is vendored at synthetic/configs/hf/gemma-2-2b (no network needed)"
+echo "== HF: model config is vendored at experiments/hf/gemma-2-2b (no network needed)"
 
 echo "== import check"
 python - <<'PY'
@@ -31,6 +31,6 @@ import torch, triton, flash_attn, transformers, lightning, wandb, adasplash, ent
 print("torch", torch.__version__, "triton", triton.__version__, "flash_attn", flash_attn.__version__,
       "transformers", transformers.__version__, "lightning", lightning.__version__, "wandb", wandb.__version__)
 from transformers import AutoConfig
-c = AutoConfig.from_pretrained(__import__("os").environ["REPO"]+"/synthetic/configs/hf/gemma-2-2b"); print("vendored config OK:", c.model_type)
+c = AutoConfig.from_pretrained(__import__("os").environ["REPO"]+"/experiments/hf/gemma-2-2b"); print("vendored config OK:", c.model_type)
 PY
 echo "== DONE"

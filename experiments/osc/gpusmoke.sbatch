@@ -7,7 +7,7 @@
 # GPU stack smoke: tiny sort dataset -> 40 train steps + 1-batch eval for softmax(flash), asentmax(adasplash), stieltjes(eager).
 set -uo pipefail
 module reset >/dev/null 2>&1 || true
-source /fs/scratch/PAS2836/$USER/asentmax/synthetic/osc/env.sh
+source /fs/scratch/PAS2836/$USER/asentmax/experiments/osc/env.sh
 source "$VENV/bin/activate"; cd "$PROJECT_ROOT"
 nvidia-smi -L; python -c "import torch;print(torch.cuda.get_device_name(0), torch.version.cuda)"
 export DATA_PATH=$TMPDIR/data; mkdir -p "$DATA_PATH/sort/tiny"
