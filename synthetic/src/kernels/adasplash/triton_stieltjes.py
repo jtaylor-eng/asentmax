@@ -783,10 +783,11 @@ def _stieltjes_bwd_dq(
 def _pick_blocks(D, elem_size, device):
     """Tile sizes shared by forward and backward (they must match).
 
-    Default (H100/A100, >=160 KB smem): 128x64 for D<=64, 64x64 for fp16/bf16 at
-    D>=128, 32x32 for fp32 at D>=128 (the fp32 backward's triple-buffered k/v
-    tiles otherwise overflow). Consumer GPUs (~100 KB smem, e.g. RTX 40xx) can't
-    fit the 128x64 backward, so fall back to 32x32 there.
+    The backward (triple-buffered K/V + Q/dO tiles) is the shared-memory
+    binding constraint. Measured requirements at 128x64: fp32 D=64 needs
+    199,680 B (fits H100's 228 KB, NOT A100's 163 KB — 2026-09-11 diag job
+    7251094); fp32 D>=128 needs more still. Consumer GPUs (~100 KB) can't fit
+    128x64 at any dtype.
     """
     try:
         idx = device.index if device.index is not None else torch.cuda.current_device()
@@ -795,10 +796,15 @@ def _pick_blocks(D, elem_size, device):
         smem = 1 << 20
     if smem < 140 * 1024:
         return 32, 32
+    if elem_size >= 4:                   # fp32
+        if D >= 128:
+            return 32, 32
+        if D >= 64 and smem < 200 * 1024:  # A100-class: 128x64 overflows at D=64
+            return 64, 64
+        return 128, 64
+    # fp16 / bf16
     if D <= 64:
         return 128, 64
-    if elem_size >= 4:
-        return 32, 32
     return 64, 64
 
 
