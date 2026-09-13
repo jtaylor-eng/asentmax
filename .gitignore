@@ -231,3 +231,4 @@ synthetic/reeval_last.log
 synthetic/wandb/
 *.ckpt
 checkpoints/
+*.pdf
