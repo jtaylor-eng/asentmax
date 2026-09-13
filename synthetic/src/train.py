@@ -93,7 +93,8 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     logger: List[Logger] = utils.instantiate_loggers(cfg.get("logger"))
 
     # Extract matmul_precision before instantiation (Trainer doesn't accept it)
-    matmul_precision = cfg.trainer.pop('matmul_precision', None)
+    with open_dict(cfg):
+        matmul_precision = cfg.trainer.pop('matmul_precision', None)
     if matmul_precision is not None:
         log.info(f"Setting matmul_precision to <{matmul_precision}>")
         torch.set_float32_matmul_precision(matmul_precision)

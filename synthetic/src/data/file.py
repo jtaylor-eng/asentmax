@@ -29,17 +29,29 @@ class FileLineIndexer:
         """
         Build a binary index file that stores 64-bit offsets for each line
         in 'self.file_path'.
+
+        Concurrency-safe: many Slurm array jobs may open the same dataset at once.
+        The index is written to a temp file and atomically renamed into place under
+        an exclusive lock; other processes wait on the lock and then find it complete.
         """
-        #print(f"Building index for {self.file_path} ...")
-        offset = 0
-
-        with open(self.file_path, 'rb') as f_in, open(self.index_path, 'wb') as f_idx:
-            for line in f_in:
-                # Write the current offset as an 8-byte (64-bit) integer.
-                f_idx.write(struct.pack('Q', offset))
-                offset += len(line)
-
-        print(f"Index built at {self.index_path}.")
+        import fcntl
+        lock_path = f"{self.index_path}.lock"
+        with open(lock_path, 'w') as lock_f:
+            fcntl.flock(lock_f, fcntl.LOCK_EX)
+            try:
+                if os.path.exists(self.index_path):
+                    return  # another process built it while we waited
+                tmp_path = f"{self.index_path}.tmp.{os.getpid()}"
+                offset = 0
+                with open(self.file_path, 'rb') as f_in, open(tmp_path, 'wb') as f_idx:
+                    for line in f_in:
+                        # Write the current offset as an 8-byte (64-bit) integer.
+                        f_idx.write(struct.pack('Q', offset))
+                        offset += len(line)
+                os.replace(tmp_path, self.index_path)
+                print(f"Index built at {self.index_path}.")
+            finally:
+                fcntl.flock(lock_f, fcntl.LOCK_UN)
 
     def _calc_line_count(self):
         """
