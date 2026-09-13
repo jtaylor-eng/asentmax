@@ -50,17 +50,25 @@ case $method in
   asentmax)  OV=(model.net.entmax_alpha=1.5 ++model.net.attn_implementation=eager ++model.net.use_fast_attn=True
                  ++model.net.attn_scale_type=adapt-softplus-tanh ++model.net.attn_scale_proj_bias=True
                  ++model.net.apply_rotary=False ++model.net.apply_nape=True) ;;
-  stieltjes) OV=(model.net.entmax_alpha=1.0 ++model.net.attn_type=stieltjes ++model.net.stieltjes_q=4.0 ++model.net.stieltjes_num_iter=30
+  # stieltjes / asstieltjes: fused Triton kernel (default stieltjes_impl=triton) for training and
+  # unpadded prefill, eager fallback for decode + left-padded batches. *_eager variants force the
+  # dense eager path everywhere (O(N^2) fp32 scores: OOMs at ~4k prefill) — kept for comparison.
+  stieltjes|stieltjes_eager)
+             OV=(model.net.entmax_alpha=1.0 ++model.net.attn_type=stieltjes ++model.net.stieltjes_q=4.0 ++model.net.stieltjes_num_iter=30
+                 ++model.net.stieltjes_impl=$([[ $method == *_eager ]] && echo eager || echo triton)
                  ++model.net.attn_implementation=eager ++model.net.use_fast_attn=False
                  ++model.net.attn_scale_type=null ++model.net.apply_rotary=False ++model.net.apply_nape=True) ;;
-  asstieltjes) OV=(model.net.entmax_alpha=1.0 ++model.net.attn_type=stieltjes ++model.net.stieltjes_q=4.0 ++model.net.stieltjes_num_iter=30
+  asstieltjes|asstieltjes_eager)
+             OV=(model.net.entmax_alpha=1.0 ++model.net.attn_type=stieltjes ++model.net.stieltjes_q=4.0 ++model.net.stieltjes_num_iter=30
+                 ++model.net.stieltjes_impl=$([[ $method == *_eager ]] && echo eager || echo triton)
                  ++model.net.attn_implementation=eager ++model.net.use_fast_attn=False
                  ++model.net.attn_scale_type=adapt-softplus-tanh ++model.net.attn_scale_proj_bias=True
                  ++model.net.apply_rotary=False ++model.net.apply_nape=True) ;;
   *) log "unknown method $method"; exit 1 ;;
 esac
-# Stieltjes eager attention can't prefill 16k/65k in memory (O(N^2)); cap its ladder at 4096.
-if [[ $method == *stieltjes ]] && [ "$task" = mqmtar ]; then
+# Eager Stieltjes can't prefill 16k/65k in memory (O(N^2)); cap its ladder at 4096. The Triton
+# path is O(N*d) so the full ladder runs (at batch 1 for >= 2048, see below).
+if [[ $method == *stieltjes_eager ]] && [ "$task" = mqmtar ]; then
   STEMS=(test_0_64 test_1_128 test_2_256 test_4_1024 test_5_4096); LABELS=(ID 2x 4x 16x 64x)
 fi
 
@@ -121,8 +129,9 @@ for i in "${!STEMS[@]}"; do
   if [ $stopped -eq 1 ]; then
     printf "%s\t%s\t%s\tSKIPPED\n" "$label" "$n" "$stem" >> "$LADDER"; log "  $label ($n): SKIPPED"; continue
   fi
-  # mqmtar at >=16384: batch 1 to bound KV/prefill memory; stieltjes eager (O(N^2) fp32 solver) at >=2048 too
-  EXTRA=(); if [ "$n" -ge 16384 ] || { [[ $method == *stieltjes ]] && [ "$n" -ge 2048 ]; }; then EXTRA=(data.batch_config.test.size=1); fi
+  # mqmtar at >=16384: batch 1 to bound KV/prefill memory. Stieltjes at >=2048 too: eager for its
+  # O(N^2) fp32 solver; triton because batch 1 means no left padding, so prefill takes the kernel.
+  EXTRA=(); if [ "$n" -ge 16384 ] || { [[ $method == *stieltjes* ]] && [ "$n" -ge 2048 ]; }; then EXTRA=(data.batch_config.test.size=1); fi
   python3 src/eval.py "experiment=entmax/$task" logger=csv task_name="t1e_${task}_${method}_s${seed}_lr${lr}_${stem}${CKPT_OVERRIDE:+_$CKPT_OVERRIDE}" \
     +seed=$seed data.data_provider.path="$DATA" "++data.data_provider.file_subset.test=[$stem]" \
     "${EXTRA[@]}" "${OV[@]}" ckpt_path="'$BEST'" > "$RUN/eval_${stem}${CKPT_OVERRIDE:+_$CKPT_OVERRIDE}.log" 2>&1

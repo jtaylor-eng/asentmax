@@ -12,7 +12,7 @@
 # One array task per task. MQMTAR gets a validation split at 512 (8x) for paper-protocol
 # checkpoint selection, plus test splits out to 65536 (1024x).
 set -euo pipefail
-source /fs/scratch/PAS2836/$USER/asentmax/synthetic/osc/env.sh
+source /fs/scratch/PAS2836/$USER/asentmax/experiments/osc/env.sh
 source "$VENV/bin/activate"
 cd "$REPO"
 GEN=scripts/generate_data.py

@@ -32,6 +32,6 @@ for task in "${TASKS[@]}"; do
     --nodes=1 --ntasks-per-node=1 --cpus-per-task=6 --gpus-per-node=1 --mem=48G \
     --array="1-${N}" --output="$RESULTS_ROOT/slurm/${MODE}_${task}_%A_%a.log" \
     --export=ALL,MANIFEST="$MAN",MAX_STEPS_OVERRIDE="$STEPS" \
-    "$REPO/synthetic/osc/array_worker.sbatch")
+    "$REPO/experiments/osc/array_worker.sbatch")
   echo "submitted $task: job $jid x$N  (manifest $MAN)"
 done

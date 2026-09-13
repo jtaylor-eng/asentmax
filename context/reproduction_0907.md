@@ -2,7 +2,7 @@
 
 Paper: *Long-Context Generalization with Sparse Attention* (arXiv 2506.16640, ICLR 2026), Table 1.
 Branch `table1-osc`. Results root on OSC: `/fs/scratch/PAS2836/jacktaylor/asentmax_results/table1/`.
-Full auto-generated tables (every run): `table1_agg.md` in that root (regenerate with `synthetic/osc/aggregate.py`).
+Full auto-generated tables (every run): `table1_agg.md` in that root (regenerate with `experiments/osc/aggregate.py`).
 
 Status: **all four tasks complete** (54 + 12 training runs). Compute: ~200 GPU-hours total.
 
@@ -137,7 +137,7 @@ Escape is stochastic and both sparse/heavy-tailed mappings need lr=2e-4 to have 
 
 ## 4. Selection protocol as implemented (for the record)
 
-For each run, primary monitor = val exact-match @8x (sort: val BLEU @4x). If the primary is never >0 over training, fall back (per the paper) to val BLEU @4x, then @2x. Among the (seed, LR) runs of a (task, method), the run with the highest selection value is reported. The checkpoint evaluated is the callback's best-by-primary checkpoint when the primary was informative, else the last checkpoint (the callback keeps the first ckpt on all-zero ties, which is uninformative). `synthetic/osc/reselect.py` prints the per-run decision; `aggregate.py` applies it.
+For each run, primary monitor = val exact-match @8x (sort: val BLEU @4x). If the primary is never >0 over training, fall back (per the paper) to val BLEU @4x, then @2x. Among the (seed, LR) runs of a (task, method), the run with the highest selection value is reported. The checkpoint evaluated is the callback's best-by-primary checkpoint when the primary was informative, else the last checkpoint (the callback keeps the first ckpt on all-zero ties, which is uninformative). `experiments/osc/reselect.py` prints the per-run decision; `aggregate.py` applies it.
 
 ## 5. Artifacts
 
@@ -146,6 +146,7 @@ For each run, primary monitor = val exact-match @8x (sort: val BLEU @4x). If the
 - Training metrics: `synthetic/logs/t1_<task>_<method>_s<seed>_lr<lr>/runs/*/csv/version_0/metrics.csv` (per-step loss, per-val-check acc/BLEU at every length).
 - W&B offline runs: `<run>/checkpoints/wandb/offline-run-*` — `wandb sync` them after `wandb login` to get the dashboard (project `asentmax-table1`, group `<task>-<method>`).
 - Code: branch `table1-osc` (13 commits), incl. `synthetic/osc/{submit.sh,run_one.sh,aggregate.py,reselect.py,progress.sh}` and the Stieltjes implementation `synthetic/src/attention/stieltjes_eager.py` (+ tests).
+  *Path note (Sep 13, `torch_triton_comp`):* the whole OSC pipeline incl. `aggregate.py` / `reselect.py` now lives in `experiments/osc/` (`synthetic/osc/` is gone). The Stieltjes rows here were produced with `stieltjes_impl=eager`; the fused Triton kernel is now the default (see `AGENTS.md`).
 
 ## 6. Suggested next steps (in priority order)
 

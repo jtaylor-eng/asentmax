@@ -147,7 +147,8 @@ def _inv_pow_triple(diff, sq: tl.constexpr):
     """(inv_q, inv_q1, inv_q2) = (λ-s)^{-q}, ^{-q-1}, ^{-q-2} — the extra
     power (one multiply on the integer-q path) feeds f'' for Halley."""
     inv_q, inv_q1 = _inv_pow_pair(diff, sq)
-    if sq == 1.0 or sq == 2.0 or sq == 3.0 or sq == 4.0 or sq == 8.0 or sq == 16.0:
+    # Triton rejects chained `or`; nest with parentheses.
+    if (((sq == 1.0) | (sq == 2.0)) | ((sq == 3.0) | (sq == 4.0))) | ((sq == 8.0) | (sq == 16.0)):
         inv_q2 = inv_q1 * (1.0 / diff)
     else:
         inv_q2 = tl.exp(tl.log(diff) * (-sq - 2.0))
@@ -164,6 +165,7 @@ def _stieltjes_attn_fwd(
     LambdaInit,  # (N,) fp32 — per-row initial λ. For causal: (i+1)^{1/q};
                  # for non-causal: N^{1/q} broadcast. Matches ref init so NR
                  # converges in the same iteration count regardless of causal.
+    AlibiSlopes,  # (H,) fp32 — NAPE/ALiBi slope per head (read iff USE_ALIBI)
     stride_qz, stride_qh, stride_qm, stride_qk,
     stride_kz, stride_kh, stride_kn, stride_kk,
     stride_vz, stride_vh, stride_vn, stride_vk,
@@ -181,6 +183,8 @@ def _stieltjes_attn_fwd(
     CAUSAL: tl.constexpr,
     NORMALIZE: tl.constexpr,  # if True: O = (Σ w v) / Σ w  (matches the
                               # normalized `stieltjes` PyTorch reference)
+    USE_ALIBI: tl.constexpr,  # add slope_h * min(j - i, 0) to the scores
+                              # (== sparse_gemma.make_bias_window on the eager path)
 ):
     start_m = tl.program_id(0)
     off_hz = tl.program_id(1)
@@ -203,6 +207,10 @@ def _stieltjes_attn_fwd(
     q_ptrs = Q + q_offset + offs_m[:, None] * stride_qm + offs_d[None, :] * stride_qk
     q_block = tl.load(q_ptrs, mask=offs_m[:, None] < N_CTX, other=0.0)
 
+    alibi_slope = 0.0
+    if USE_ALIBI:
+        alibi_slope = tl.load(AlibiSlopes + off_h)
+
     # ===== PASS 1: Row-wise max + argmax of QK^T =====
     row_max = tl.full([BLOCK_M], value=-1e30, dtype=tl.float32)
     row_argmax = tl.zeros([BLOCK_M], dtype=tl.int32)
@@ -214,6 +222,8 @@ def _stieltjes_attn_fwd(
 
         # QK^T: [BLOCK_M, BLOCK_N]
         qk = tl.dot(q_block, tl.trans(k_block), input_precision="ieee") * sm_scale
+        if USE_ALIBI:
+            qk = qk + alibi_slope * tl.minimum((offs_n[None, :] - offs_m[:, None]).to(tl.float32), 0.0)
 
         # Mask PADDED key columns (offs_n >= N_CTX, present when N_CTX is not a
         # multiple of BLOCK_N). Their k=0 gives qk=0, which is NOT a valid score;
@@ -258,6 +268,8 @@ def _stieltjes_attn_fwd(
             k_block = tl.load(k_ptrs, mask=offs_n[:, None] < N_CTX, other=0.0)
 
             qk = tl.dot(q_block, tl.trans(k_block), input_precision="ieee") * sm_scale
+            if USE_ALIBI:
+                qk = qk + alibi_slope * tl.minimum((offs_n[None, :] - offs_m[:, None]).to(tl.float32), 0.0)
 
             # Mask padded key columns (see PASS 1). Keeps spurious mass out of the
             # Newton normalization sum. No-op when N_CTX is a multiple of BLOCK_N.
@@ -312,6 +324,8 @@ def _stieltjes_attn_fwd(
         v_block = tl.load(v_ptrs, mask=offs_n[:, None] < N_CTX, other=0.0)
 
         qk = tl.dot(q_block, tl.trans(k_block), input_precision="ieee") * sm_scale
+        if USE_ALIBI:
+            qk = qk + alibi_slope * tl.minimum((offs_n[None, :] - offs_m[:, None]).to(tl.float32), 0.0)
 
         # Mask padded key columns (see PASS 1). Keeps spurious mass out of d_sum
         # and the P@V accumulation. No-op when N_CTX is a multiple of BLOCK_N.
@@ -372,8 +386,8 @@ def _stieltjes_attn_fwd(
 
 @triton.jit
 def _stieltjes_score_helpers(
-    q_block, k_block, lam_row, sm_scale, offs_m, offs_n, N_CTX,
-    sq: tl.constexpr, EPS: tl.constexpr, CAUSAL: tl.constexpr,
+    q_block, k_block, lam_row, sm_scale, offs_m, offs_n, N_CTX, alibi_slope,
+    sq: tl.constexpr, EPS: tl.constexpr, CAUSAL: tl.constexpr, USE_ALIBI: tl.constexpr,
 ):
     """Recompute scores and Stieltjes weight helpers (P, r) for a Q×K tile.
 
@@ -383,6 +397,8 @@ def _stieltjes_score_helpers(
       qk      = Q @ K^T * scale   — raw scores (for debugging / optional use)
     """
     qk = tl.dot(q_block, tl.trans(k_block), input_precision="ieee") * sm_scale
+    if USE_ALIBI:
+        qk = qk + alibi_slope * tl.minimum((offs_n[None, :] - offs_m[:, None]).to(tl.float32), 0.0)
 
     if CAUSAL:
         causal_mask = offs_m[:, None] >= offs_n[None, :]
@@ -411,6 +427,7 @@ def _stieltjes_score_helpers(
 def _stieltjes_bwd_delta(
     Q, K, V, DO,
     Lambda, D_sum, Delta,          # Delta is the output: (B*H, N)
+    AlibiSlopes,
     stride_qz, stride_qh, stride_qm, stride_qk,
     stride_kz, stride_kh, stride_kn, stride_kk,
     stride_vz, stride_vh, stride_vn, stride_vk,
@@ -422,6 +439,7 @@ def _stieltjes_bwd_delta(
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
     CAUSAL: tl.constexpr,
+    USE_ALIBI: tl.constexpr,
 ):
     """Compute δ_i = (Σ_j dP_ij · r_ij) / D_i for each query row."""
     start_m = tl.program_id(0)
@@ -431,6 +449,9 @@ def _stieltjes_bwd_delta(
     # views at B > 1 (2026-08-04 audit; see _stieltjes_attn_fwd).
     off_z = off_hz // H
     off_h = off_hz % H
+    alibi_slope = 0.0
+    if USE_ALIBI:
+        alibi_slope = tl.load(AlibiSlopes + off_h)
 
     q_off = off_z * stride_qz + off_h * stride_qh
     k_off = off_z * stride_kz + off_h * stride_kh
@@ -465,8 +486,8 @@ def _stieltjes_bwd_delta(
 
         # Recompute attention helpers
         _weights, r, _qk = _stieltjes_score_helpers(
-            q_block, k_block, lam_row, sm_scale, offs_m, offs_n, N_CTX,
-            sq, EPS, CAUSAL,
+            q_block, k_block, lam_row, sm_scale, offs_m, offs_n, N_CTX, alibi_slope,
+            sq, EPS, CAUSAL, USE_ALIBI,
         )
 
         # dP tile = dO @ V^T : [BLOCK_M, BLOCK_N]
@@ -487,6 +508,7 @@ def _stieltjes_bwd_dkdv(
     Q, K, V, DO,
     Lambda, Delta, D_sum, Argmax,
     NormCoef, NormB, NormKappa,   # (B*H, N) fp32 — only read when NORMALIZE
+    AlibiSlopes,
     DK, DV,
     stride_qz, stride_qh, stride_qm, stride_qk,
     stride_kz, stride_kh, stride_kn, stride_kk,
@@ -504,6 +526,7 @@ def _stieltjes_bwd_dkdv(
     BLOCK_LAMBDA_GRAD: tl.constexpr,
     NORMALIZE: tl.constexpr,
     IFT_NORM: tl.constexpr,
+    USE_ALIBI: tl.constexpr,
 ):
     """Compute dK and dV by iterating over Q blocks for a fixed K/V block.
 
@@ -528,6 +551,9 @@ def _stieltjes_bwd_dkdv(
     # views at B > 1 (2026-08-04 audit; see _stieltjes_attn_fwd).
     off_z = off_hz // H
     off_h = off_hz % H
+    alibi_slope = 0.0
+    if USE_ALIBI:
+        alibi_slope = tl.load(AlibiSlopes + off_h)
 
     k_off = off_z * stride_kz + off_h * stride_kh
     v_off = off_z * stride_vz + off_h * stride_vh
@@ -565,8 +591,8 @@ def _stieltjes_bwd_dkdv(
 
         # Recompute P and r
         weights, r, _qk = _stieltjes_score_helpers(
-            q_block, k_block, lam_row, sm_scale, offs_m, offs_n, N_CTX,
-            sq, EPS, CAUSAL,
+            q_block, k_block, lam_row, sm_scale, offs_m, offs_n, N_CTX, alibi_slope,
+            sq, EPS, CAUSAL, USE_ALIBI,
         )
 
         # dP = dO @ V^T : [BLOCK_M, BLOCK_N]
@@ -603,7 +629,9 @@ def _stieltjes_bwd_dkdv(
 
         if CAUSAL:
             causal_mask = offs_m[:, None] >= offs_n[None, :]
-            dS = tl.where(causal_mask, dS, 0.0)
+            # tl.where with a python-float `other` promotes bf16/fp16 to fp32;
+            # cast back so the tl.dot operands match.
+            dS = tl.where(causal_mask, dS, 0.0).to(q_block.dtype)
 
         # dK += dS^T @ Q * sm_scale
         dk += tl.dot(tl.trans(dS), q_block, input_precision="ieee") * sm_scale
@@ -629,6 +657,7 @@ def _stieltjes_bwd_dq(
     Q, K, V, DO,
     Lambda, Delta, D_sum, Argmax,
     NormCoef, NormB, NormKappa,   # (B*H, N) fp32 — only read when NORMALIZE
+    AlibiSlopes,
     DQ,
     stride_qz, stride_qh, stride_qm, stride_qk,
     stride_kz, stride_kh, stride_kn, stride_kk,
@@ -645,6 +674,7 @@ def _stieltjes_bwd_dq(
     BLOCK_LAMBDA_GRAD: tl.constexpr,
     NORMALIZE: tl.constexpr,
     IFT_NORM: tl.constexpr,
+    USE_ALIBI: tl.constexpr,
 ):
     """Compute dQ by iterating over K/V blocks for a fixed Q block.
 
@@ -658,6 +688,9 @@ def _stieltjes_bwd_dq(
     # views at B > 1 (2026-08-04 audit; see _stieltjes_attn_fwd).
     off_z = off_hz // H
     off_h = off_hz % H
+    alibi_slope = 0.0
+    if USE_ALIBI:
+        alibi_slope = tl.load(AlibiSlopes + off_h)
 
     q_off = off_z * stride_qz + off_h * stride_qh
     k_off = off_z * stride_kz + off_h * stride_kh
@@ -704,8 +737,8 @@ def _stieltjes_bwd_dq(
 
         # Recompute helpers
         _weights, r, _qk = _stieltjes_score_helpers(
-            q_block, k_block, lam_row, sm_scale, offs_m, offs_n, N_CTX,
-            sq, EPS, CAUSAL,
+            q_block, k_block, lam_row, sm_scale, offs_m, offs_n, N_CTX, alibi_slope,
+            sq, EPS, CAUSAL, USE_ALIBI,
         )
 
         # dP = dO @ V^T : [BLOCK_M, BLOCK_N]
@@ -730,7 +763,9 @@ def _stieltjes_bwd_dq(
 
         if CAUSAL:
             causal_mask = offs_m[:, None] >= offs_n[None, :]
-            dS = tl.where(causal_mask, dS, 0.0)
+            # tl.where with a python-float `other` promotes bf16/fp16 to fp32;
+            # cast back so the tl.dot operands match.
+            dS = tl.where(causal_mask, dS, 0.0).to(q_block.dtype)
 
         # dQ += dS @ K * sm_scale
         dq += tl.dot(dS, k_block, input_precision="ieee") * sm_scale
@@ -745,11 +780,39 @@ def _stieltjes_bwd_dq(
 # Autograd wrapper
 # ---------------------------------------------------------------------------
 
+def _pick_blocks(D, elem_size, device):
+    """Tile sizes shared by forward and backward (they must match).
+
+    The backward (triple-buffered K/V + Q/dO tiles) is the shared-memory
+    binding constraint. Measured requirements at 128x64: fp32 D=64 needs
+    199,680 B (fits H100's 228 KB, NOT A100's 163 KB — 2026-09-11 diag job
+    7251094); fp32 D>=128 needs more still. Consumer GPUs (~100 KB) can't fit
+    128x64 at any dtype.
+    """
+    try:
+        idx = device.index if device.index is not None else torch.cuda.current_device()
+        smem = triton.runtime.driver.active.utils.get_device_properties(idx)["max_shared_mem"]
+    except Exception:
+        smem = 1 << 20
+    if smem < 140 * 1024:
+        return 32, 32
+    if elem_size >= 4:                   # fp32
+        if D >= 128:
+            return 32, 32
+        if D >= 64 and smem < 200 * 1024:  # A100-class: 128x64 overflows at D=64
+            return 64, 64
+        return 128, 64
+    # fp16 / bf16
+    if D <= 64:
+        return 128, 64
+    return 64, 64
+
+
 class StieltjesAttention(torch.autograd.Function):
     @staticmethod
     def forward(ctx, q, k, v, causal, sm_scale, stieltjes_q=1.0, num_iter=8,
                 block_lambda_grad=False, normalize=False, ift_grad=False,
-                solver="nr"):
+                solver="nr", alibi_slopes=None):
         """
         normalize: if True, output is O = (Σ w v) / Σ w and the backward is the
           normalized-Stieltjes gradient — matches the normalized `stieltjes`
@@ -810,12 +873,7 @@ class StieltjesAttention(torch.autograd.Function):
         # 2x the bytes of fp16/bf16; at D>=128 the default 64x64 tiles overflow
         # H100 shared memory in the backward (triple-buffered k/v: ~256KB > 228KB),
         # so shrink to 32x32 for fp32. fp16/bf16 behavior is unchanged.
-        if D <= 64:
-            BLOCK_M, BLOCK_N = 128, 64
-        elif q.element_size() >= 4:   # fp32 at D in {128, 256}
-            BLOCK_M, BLOCK_N = 32, 32
-        else:                          # fp16 / bf16 at D in {128, 256}
-            BLOCK_M, BLOCK_N = 64, 64
+        BLOCK_M, BLOCK_N = _pick_blocks(D, q.element_size(), q.device)
 
         if B * H > 65535:
             raise ValueError(
@@ -823,10 +881,17 @@ class StieltjesAttention(torch.autograd.Function):
                 "split the batch before calling stieltjes_attention")
         grid = (triton.cdiv(N, BLOCK_M), B * H)
 
+        use_alibi = alibi_slopes is not None
+        if use_alibi:
+            alibi_slopes = alibi_slopes.reshape(-1).to(device=q.device, dtype=torch.float32).contiguous()
+            assert alibi_slopes.shape == (H,), "alibi_slopes must have shape (H,)"
+        else:
+            alibi_slopes = lam  # never read (USE_ALIBI constexpr-eliminated); valid pointer
+
         _stieltjes_attn_fwd[grid](
             q, k, v, o,
             lam, d_sum, argmax, wsum,
-            lambda_init,
+            lambda_init, alibi_slopes,
             q.stride(0), q.stride(1), q.stride(2), q.stride(3),
             k.stride(0), k.stride(1), k.stride(2), k.stride(3),
             v.stride(0), v.stride(1), v.stride(2), v.stride(3),
@@ -843,9 +908,11 @@ class StieltjesAttention(torch.autograd.Function):
             BLOCK_N=BLOCK_N,
             CAUSAL=causal,
             NORMALIZE=normalize,
+            USE_ALIBI=use_alibi,
         )
 
-        ctx.save_for_backward(q, k, v, o, lam, d_sum, argmax, wsum)
+        ctx.save_for_backward(q, k, v, o, lam, d_sum, argmax, wsum, alibi_slopes)
+        ctx.use_alibi = use_alibi
         ctx.sm_scale = sm_scale
         ctx.causal = causal
         ctx.stieltjes_q = stieltjes_q
@@ -876,7 +943,7 @@ class StieltjesAttention(torch.autograd.Function):
 
         All kernels recompute scores on-the-fly to avoid O(N²) storage.
         """
-        q, k, v, o, lam, d_sum, argmax, wsum = ctx.saved_tensors
+        q, k, v, o, lam, d_sum, argmax, wsum, alibi_slopes = ctx.saved_tensors
         sq = ctx.stieltjes_q
         sm_scale = ctx.sm_scale
         causal = ctx.causal
@@ -895,12 +962,7 @@ class StieltjesAttention(torch.autograd.Function):
         BH = B * H
         # Must match the forward's precision-aware block selection (fp32 at
         # D>=128 uses 32x32 to fit H100 shared memory in the backward).
-        if D <= 64:
-            BLOCK_M, BLOCK_N = 128, 64
-        elif q.element_size() >= 4:   # fp32 at D in {128, 256}
-            BLOCK_M, BLOCK_N = 32, 32
-        else:                          # fp16 / bf16 at D in {128, 256}
-            BLOCK_M, BLOCK_N = 64, 64
+        BLOCK_M, BLOCK_N = _pick_blocks(D, q.element_size(), q.device)
 
         do = do.contiguous()
 
@@ -914,7 +976,7 @@ class StieltjesAttention(torch.autograd.Function):
             sm_scale=sm_scale, N_CTX=N, H=H,
             sq=sq, EPS=1e-6,
             HEAD_DIM=D, BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N,
-            CAUSAL=causal,
+            CAUSAL=causal, USE_ALIBI=ctx.use_alibi,
         )
 
         # --- Kernel 1: Compute delta ---
@@ -923,7 +985,7 @@ class StieltjesAttention(torch.autograd.Function):
 
         _stieltjes_bwd_delta[grid_m](
             q, k, v, do,
-            lam, d_sum, delta,
+            lam, d_sum, delta, alibi_slopes,
             *q_strides, *k_strides, *v_strides, *do_strides,
             **common_args,
         )
@@ -953,7 +1015,7 @@ class StieltjesAttention(torch.autograd.Function):
         _stieltjes_bwd_dkdv[grid_n](
             q, k, v, do,
             lam, delta, d_sum, argmax,
-            norm_coef, norm_b, norm_kappa,
+            norm_coef, norm_b, norm_kappa, alibi_slopes,
             dk, dv,
             *q_strides, *k_strides, *v_strides, *do_strides,
             dk.stride(0), dk.stride(1), dk.stride(2), dk.stride(3),
@@ -970,7 +1032,7 @@ class StieltjesAttention(torch.autograd.Function):
         _stieltjes_bwd_dq[grid_m](
             q, k, v, do,
             lam, delta, d_sum, argmax,
-            norm_coef, norm_b, norm_kappa,
+            norm_coef, norm_b, norm_kappa, alibi_slopes,
             dq,
             *q_strides, *k_strides, *v_strides, *do_strides,
             dq.stride(0), dq.stride(1), dq.stride(2), dq.stride(3),
@@ -980,12 +1042,12 @@ class StieltjesAttention(torch.autograd.Function):
             IFT_NORM=ift_norm,
         )
 
-        return dq, dk, dv, None, None, None, None, None, None, None, None
+        return dq, dk, dv, None, None, None, None, None, None, None, None, None
 
 
 def stieltjes_attention(q, k, v, causal=False, sm_scale=None, stieltjes_q=1.0,
                         num_iter=8, block_lambda_grad=False, normalize=False,
-                        ift_grad=False, solver="nr"):
+                        ift_grad=False, solver="nr", alibi_slopes=None):
     """
     Stieltjes flash attention.
 
@@ -1018,12 +1080,15 @@ def stieltjes_attention(q, k, v, causal=False, sm_scale=None, stieltjes_q=1.0,
             convergence: one extra multiply chain per element buys ~8→3
             iterations at equal tolerance — sweeps dominate the forward
             cost, so this is ~1.8× when paired with num_iter=3).
+        alibi_slopes: optional (H,) tensor of NAPE/ALiBi slopes; adds
+            slope_h * min(j - i, 0) to every score (forward and the backward
+            recomputation), identical to the eager path's make_bias_window.
     """
     if sm_scale is None:
         sm_scale = 1.0 / (q.shape[-1] ** 0.5)
     return StieltjesAttention.apply(
         q, k, v, causal, sm_scale, stieltjes_q, num_iter, block_lambda_grad,
-        normalize, ift_grad, solver,
+        normalize, ift_grad, solver, alibi_slopes,
     )
 
 

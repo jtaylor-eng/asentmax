@@ -1,5 +1,9 @@
 # Table 1 Reproduction — Checkpoint-Selection Fix Pass
 
+> **SUPERSEDED** (2026-09-13). Local RTX 4070 run, 1 seed, repo-default config, last.ckpt selection.
+> The paper-protocol OSC results are in `reproduction_0907.md` / `reproduction_0907_all_runs.md`.
+> Kept for provenance: it is the "local 4070" row quoted in those reports.
+
 Paper: "Long-Context Generalization with Sparse Attention" (arXiv:2506.16640), Table 1.
 Repo: asentmax/synthetic. Protocol: per-length exact-match eval ladder, 100-sample test
 sets, early-stop once a model hits exactly 0.0 (longer lengths marked `skip`).

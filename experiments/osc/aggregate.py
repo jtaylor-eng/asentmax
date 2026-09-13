@@ -27,7 +27,7 @@ FALLBACK = {"sort":["val/bleu_epoch/dataloader_idx_1"],
             "reverse":["val/bleu_epoch/dataloader_idx_3","val/bleu_epoch/dataloader_idx_2"],
             "copy":["val/bleu_epoch/dataloader_idx_2","val/bleu_epoch/dataloader_idx_1"],
             "mqmtar":["val/bleu_epoch/dataloader_idx_2","val/bleu_epoch/dataloader_idx_1"]}
-METHOD_ORDER = ["softmax","asentmax","stieltjes","asstieltjes"]
+METHOD_ORDER = ["softmax","asentmax","stieltjes","asstieltjes","stieltjes_eager","asstieltjes_eager"]
 LOCAL = {  # previous single-seed 4070 run (from synthetic/TABLE1_REPRODUCED_FIXED.md)
   "sort":    {"softmax":[100,0,"skip","skip"], "asentmax":[100,96,69,0]},
   "reverse": {"softmax":[100,76,0,"skip","skip"], "asentmax":[100,100,100,92,36]},
@@ -73,7 +73,8 @@ def collect(results, project_root):
         if degenerate and not lad:  # re-ladder not done yet; fall back to what exists
             lad = read_ladder(os.path.join(run, "ladder.tsv")); ladder_file = "ladder.tsv (pending last)"
         labels = PAPER[task][0]
-        n_expected = 5 if (method.endswith("stieltjes") and task == "mqmtar") else len(labels)
+        # eager Stieltjes ladders are capped at 64x on mqmtar (O(N^2) prefill); the Triton path runs the full ladder
+        n_expected = 5 if (method.endswith("stieltjes_eager") and task == "mqmtar") else len(labels)
         complete = sum(l in lad and lad[l] not in ("ERR",) for l in labels) >= n_expected
         vals = [lad.get(l, "-") for l in labels]
         best = glob.glob(os.path.join(run, "checkpoints", "epoch=*.ckpt"))

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Quick progress view for all Table-1 runs: step / it/s / loss / status. Run on a login node.
-source /fs/scratch/PAS2836/$USER/asentmax/synthetic/osc/env.sh
+source /fs/scratch/PAS2836/$USER/asentmax/experiments/osc/env.sh
 python3 - "$RESULTS_ROOT" "$PROJECT_ROOT" <<'PY'
 import csv, glob, os, re, sys, datetime
 R, P = sys.argv[1], sys.argv[2]

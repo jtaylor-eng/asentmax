@@ -8,7 +8,7 @@
 # and on the validation_3_256 file (via file_subset on test split with a symlinked copy).
 set -uo pipefail
 module reset >/dev/null 2>&1 || true
-source /fs/scratch/PAS2836/$USER/asentmax/synthetic/osc/env.sh
+source /fs/scratch/PAS2836/$USER/asentmax/experiments/osc/env.sh
 source "$VENV/bin/activate"; cd "$PROJECT_ROOT"
 RUN=$RESULTS_ROOT/reverse/asentmax/s1_lr8e-4
 D=$DATA_ROOT/reverse/30M_tr-32-64_val_64-256_t-64-512
