@@ -142,13 +142,16 @@ echo "$BEST" > "$RUN/best_ckpt${CKPT_OVERRIDE:+_$CKPT_OVERRIDE}.txt"
 # ---------------- 3) OOD ladder with early-stop on exact 0.0 ----------------
 LADDER="$RUN/$LADDER_NAME"
 if [ -f "$LADDER" ] && [ "$(wc -l < "$LADDER")" -ge "${#STEMS[@]}" ] && ! grep -q ERR "$LADDER"; then log "ladder already done"; else
-: > "$LADDER"
+# resume: keep rungs already scored (non-ERR, non-SKIPPED); only the missing ones are evaluated
+if [ -f "$LADDER" ]; then grep -v -E "ERR|SKIPPED" "$LADDER" > "$LADDER.tmp" || true; mv "$LADDER.tmp" "$LADDER"; else : > "$LADDER"; fi
 stopped=0
 for i in "${!STEMS[@]}"; do
-  stem=${STEMS[$i]}; label=${LABELS[$i]}; n=${stem##*_}
+  stem=${STEMS[$i]}; label=${LABELS[$i]}; n=$(echo "$stem" | grep -oE '[0-9]+$')
   if [ $stopped -eq 1 ]; then
     printf "%s\t%s\t%s\tSKIPPED\n" "$label" "$n" "$stem" >> "$LADDER"; log "  $label ($n): SKIPPED"; continue
   fi
+  cached=$(awk -F'\t' -v l="$label" '$1==l{print $4}' "$LADDER")
+  if [ -n "$cached" ]; then log "  $label ($n): $cached% (cached)"; [ "$cached" = "0.0" ] && stopped=1; continue; fi
   # mqmtar at >=16384: batch 1 to bound KV/prefill memory. Stieltjes at >=2048 too: eager for its
   # O(N^2) fp32 solver; triton because batch 1 means no left padding, so prefill takes the kernel.
   EXTRA=(); if [ "$n" -ge 16384 ] || { [[ $method == *stieltjes* ]] && [ "$n" -ge 2048 ]; }; then EXTRA=(data.batch_config.test.size=1); fi
