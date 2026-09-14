@@ -66,10 +66,29 @@ case $method in
                  ++model.net.apply_rotary=False ++model.net.apply_nape=True) ;;
   *) log "unknown method $method"; exit 1 ;;
 esac
+# NaN guard (LR sweep, Sep 13): stop training at the next validation check once the train loss is
+# non-finite instead of burning the full walltime on a diverged run. Patience is effectively
+# infinite so this never stops on "no improvement"; the best-by-monitor ckpt saved before the
+# divergence is still evaluated, so a diverged LR is a valid (bracketing) sweep point.
+# trainer.min_epochs=0: the repo default (min_epochs=1) makes Lightning ignore the stop signal.
+TRAIN_OV=(trainer.min_epochs=0 +callbacks.early_stopping._target_=lightning.pytorch.callbacks.EarlyStopping
+     +callbacks.early_stopping.monitor=train/loss_step +callbacks.early_stopping.mode=min
+     +callbacks.early_stopping.patience=1000000000 +callbacks.early_stopping.check_finite=True
+     +callbacks.early_stopping.strict=True +callbacks.early_stopping.verbose=True)
 # Eager Stieltjes can't prefill 16k/65k in memory (O(N^2)); cap its ladder at 4096. The Triton
 # path is O(N*d) so the full ladder runs (at batch 1 for >= 2048, see below).
 if [[ $method == *stieltjes_eager ]] && [ "$task" = mqmtar ]; then
   STEMS=(test_0_64 test_1_128 test_2_256 test_4_1024 test_5_4096); LABELS=(ID 2x 4x 16x 64x)
+fi
+# TIEBREAK=1 (LR sweep): eval-only pass over the long VALIDATION splits from gen_tiebreak_val.sh
+# (stored as test_1<i>_val<len> so eval.py's test loader can select them). Used to rank runs whose
+# primary monitor is tied at 1.0. Writes ladder_tiebreak.tsv; never touches ladder.tsv.
+if [ "${TIEBREAK:-}" = 1 ]; then
+  case $task in
+    copy)   STEMS=(test_10_val1024 test_11_val2048); LABELS=(val16x val32x) ;;
+    mqmtar) STEMS=(test_10_val1024 test_11_val4096); LABELS=(val16x val64x) ;;
+    *) log "TIEBREAK not defined for $task"; exit 1 ;;
+  esac
 fi
 
 CKPT_DIR="$RUN/checkpoints"
@@ -96,7 +115,7 @@ else
     "++callbacks.model_checkpoint.dirpath=$CKPT_DIR" ++trainer.max_steps=$STEPS "${RESUME[@]}" "${SMOKE_EXTRA[@]}" \
     "++logger.wandb.project=asentmax-table1" "++logger.wandb.name=${task}-${method}-s${seed}-lr${lr}" \
     "++logger.wandb.group=${task}-${method}" "++logger.wandb.tags=[${task},${method},seed${seed}]" \
-    "${OV[@]}" >> "$RUN/train.log" 2>&1
+    "${OV[@]}" "${TRAIN_OV[@]}" >> "$RUN/train.log" 2>&1
   rc=$?
   if [ $rc -ne 0 ]; then log "TRAIN FAILED rc=$rc"; exit $rc; fi
   touch "$RUN/TRAIN_DONE"; log "TRAIN done"
@@ -106,6 +125,7 @@ fi
 # CKPT_OVERRIDE=last: evaluate the fully-trained last.ckpt instead (used when the primary
 # monitor was degenerate and the paper's BLEU fallback pick was not among the saved ckpts).
 LADDER_NAME="ladder.tsv"
+[ "${TIEBREAK:-}" = 1 ] && LADDER_NAME="ladder_tiebreak.tsv"
 if [ "${CKPT_OVERRIDE:-}" = "last" ]; then
   BEST="$CKPT_DIR/last.ckpt"; LADDER_NAME="ladder_last.tsv"
   [ -f "$BEST" ] || { log "ERROR: no last.ckpt"; exit 3; }
