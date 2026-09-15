@@ -17,8 +17,10 @@ confidence estimate *before* OSC compute is spent; results reported as tables wi
 
 | file | status |
 |---|---|
-| `context/reproduction_0907.md` | **CURRENT** results, findings (§3), selection protocol (§4), next steps (§6) |
-| `context/reproduction_0907_all_runs.md` | appendix to the above: every (task, method, seed, lr) run |
+| `context/reproduction_0913.md` | **CURRENT** — LR sweep (softmax + stieltjes, bracketed grids, 3 seeds at top-2 LRs), findings §4, selection delta §6, pending §7 |
+| `context/reproduction_0913_all_runs.md` | appendix: every softmax/stieltjes (task, seed, lr) run incl. tie-break ladders |
+| `context/reproduction_0907.md` | **SUPERSEDED** by 0913 — first paper-protocol pass; still the reference for the ASEntmax rows and the protocol write-up (§1, §4) |
+| `context/reproduction_0907_all_runs.md` | appendix to the above |
 | `context/TABLE1_REPRODUCED_FIXED.md` | **SUPERSEDED** — local single-seed last.ckpt pass; kept for provenance only |
 | `context/*.pdf` | reference papers (gitignored; present locally) |
 
@@ -44,7 +46,8 @@ synthetic/                    Lightning + Hydra training tree (the thing that ac
   data/ logs/ results_*/ .venv/              gitignored local artifacts (data is ~34 GB)
 experiments/                  fork-added, non-library
   osc/                        the OSC pipeline: env.sh (all paths) · setup_env.sh (one-time venv) · submit.sh -> array_worker.sbatch -> run_one.sh ·
-                              datagen.sbatch · progress.sh · aggregate.py / reselect.py (result tables; per-run selection decision) · submit_impl_cmp.sh
+                              datagen.sbatch · progress.sh · aggregate.py / reselect.py / dump_runs.py (result tables; per-run selection; JSON dump) · submit_impl_cmp.sh ·
+                              submit_lrsweep.sh (LR sweep: stage1|stage2|reladder|manifest) · gen_tiebreak_val.sh (long val splits for tie-breaking)
   osc/oneoff/                 single-use smoke / diagnostic sbatch scripts, kept for reference
   tests/smoke_stieltjes_local.sh   ~1 min local end-to-end (train 60 steps + eval) on the sort data
   hf/gemma-2-2b/config.json   vendored HF config so no network/token is needed (model weights are random-init)
