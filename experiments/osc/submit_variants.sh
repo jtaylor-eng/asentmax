@@ -32,7 +32,10 @@ COMMIT=$(git rev-parse --short HEAD)
 submit_array() {  # name task manifest walltime [max_steps]
   local name=$1 task=$2 man=$3 wall=$4 steps=${5:-} N
   N=$(wc -l < "$man"); [ "$N" -gt 0 ] || { echo "skip $task: empty manifest"; return; }
+  # DEP=afterok:<id>[:<id>...] chains this array on earlier jobs (the SBATCH_DEPENDENCY env var was
+  # NOT honoured here on Sep 19; pass it explicitly).
   jid=$(sbatch --parsable --account=PAS2836 --job-name="${name}_${task}" --time="$wall" \
+    ${DEP:+--dependency="$DEP"} \
     --nodes=1 --ntasks-per-node=1 --cpus-per-task=6 --gpus-per-node=1 --mem=48G \
     --array="1-${N}" --output="$RESULTS_ROOT/slurm/${name}_${task}_%A_%a.log" \
     --export=ALL,MANIFEST="$man",MAX_STEPS_OVERRIDE="$steps" \

@@ -74,4 +74,11 @@ Mechanism predictions:
 
 ## 5. Jobs
 
-(filled in at submission)
+Submitted 2026-09-19 ~23:30 EDT from commit `dc550e7`. Smoke (1500 steps, seed 1, own results root
+`table1_smoke/`): sort 7409254 x4, reverse 7409255 x4, copy 7409256 x4, mqmtar 7409257 x5.
+Full batch (47 elements; `afterok` on all four smoke arrays, attached via `scontrol update` because
+`SBATCH_DEPENDENCY` was not honoured through the submit script): sort 7409259 x11, reverse 7409260 x11,
+copy 7409261 x11, mqmtar 7409262 x14. Manifests: `$RESULTS_ROOT/manifests/variants_full_<task>_dc550e7.txt`.
+If any smoke element fails, the whole full batch stays held (`afterok`); inspect
+`table1_smoke/slurm/vsm_<task>_<jobid>_<i>.log`, fix, then `scontrol release` or resubmit `full`
+(run_one.sh is idempotent).
