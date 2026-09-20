@@ -4,7 +4,7 @@ export SCRATCH_ROOT="/fs/scratch/PAS2836/${OSC_USER}"
 export REPO="${SCRATCH_ROOT}/asentmax"                 # git checkout (this repo)
 export VENV="${SCRATCH_ROOT}/venvs/asentmax"
 export DATA_ROOT="${SCRATCH_ROOT}/asentmax_data"        # generated datasets (~35 GB)
-export RESULTS_ROOT="${SCRATCH_ROOT}/asentmax_results/table1"
+export RESULTS_ROOT="${RESULTS_ROOT:-${SCRATCH_ROOT}/asentmax_results/table1}"   # overridable (smoke runs use table1_smoke)
 export ESS_ROOT="/fs/ess/PAS2836/${OSC_USER}/asentmax_results"   # durable tarballs of summaries
 
 export HF_HOME="${SCRATCH_ROOT}/hf"

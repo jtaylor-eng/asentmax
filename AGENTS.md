@@ -17,7 +17,8 @@ confidence estimate *before* OSC compute is spent; results reported as tables wi
 
 | file | status |
 |---|---|
-| `context/reproduction_0913.md` | **CURRENT** — LR sweep (softmax + stieltjes, bracketed grids, 3 seeds at top-2 LRs), findings §4, selection delta §6, pending §7 |
+| `context/variants_0919_plan.md` | **CURRENT plan** — Stieltjes variants batch (q=16, windowed d=2, AS-windowed, entmax control, asentmax mqmtar fix): guessed LRs, predictions, job IDs |
+| `context/reproduction_0913.md` | **CURRENT results** — LR sweep (softmax + stieltjes, bracketed grids, 3 seeds at top-2 LRs), findings §4, selection delta §6, pending §7 |
 | `context/reproduction_0913_all_runs.md` | appendix: every softmax/stieltjes (task, seed, lr) run incl. tie-break ladders |
 | `context/reproduction_0907.md` | **SUPERSEDED** by 0913 — first paper-protocol pass; still the reference for the ASEntmax rows and the protocol write-up (§1, §4) |
 | `context/reproduction_0907_all_runs.md` | appendix to the above |
@@ -47,35 +48,48 @@ synthetic/                    Lightning + Hydra training tree (the thing that ac
 experiments/                  fork-added, non-library
   osc/                        the OSC pipeline: env.sh (all paths) · setup_env.sh (one-time venv) · submit.sh -> array_worker.sbatch -> run_one.sh ·
                               datagen.sbatch · progress.sh · aggregate.py / reselect.py / dump_runs.py (result tables; per-run selection; JSON dump) · submit_impl_cmp.sh ·
-                              submit_lrsweep.sh (LR sweep: stage1|stage2|reladder|manifest) · gen_tiebreak_val.sh (long val splits for tie-breaking)
+                              submit_lrsweep.sh (LR sweep: stage1|stage2|reladder|manifest) · gen_tiebreak_val.sh (long val splits for tie-breaking) ·
+                              submit_variants.sh (Sep 19 variants batch: smoke|full|manifest; smoke writes to $RESULTS_ROOT_smoke)
   osc/oneoff/                 single-use smoke / diagnostic sbatch scripts, kept for reference
-  tests/smoke_stieltjes_local.sh   ~1 min local end-to-end (train 60 steps + eval) on the sort data
+  tests/smoke_stieltjes_local.sh   ~1 min/method local end-to-end (train 60 steps + eval) on the sort data
+  tests/learn1500_local.sh         ~1.5 min/method: 1500 steps, prints loss trajectory + val acc (does the row learn?)
   hf/gemma-2-2b/config.json   vendored HF config so no network/token is needed (model weights are random-init)
 context/                      papers, proposal, reports (see table above)
 ```
 
 ## Stieltjes implementation facts
 
-- Enabled via `++model.net.attn_type=stieltjes ++model.net.stieltjes_q=4.0 ++model.net.stieltjes_num_iter=30
+- One map, dense or windowed: `w_j = [(λ - s_j)^{-q} - c]_+`, `c = d^{-q}`, λ solved per row so Σw = 1.
+  `++model.net.stieltjes_window=<d>` (0/absent = dense, bit-identical to the pre-Sep-19 dense kernel).
+  Enabled via `++model.net.attn_type=stieltjes ++model.net.stieltjes_q=<q> ++model.net.stieltjes_num_iter=30
   ++model.net.stieltjes_impl={triton|eager}` with `attn_implementation=eager use_fast_attn=False`.
+- `synthetic/src/attention/stieltjes_eager.py` is the O(N^2) reference (bracketed Newton, IFT gradient);
+  `synthetic/src/kernels/adasplash/triton_stieltjes.py` is the fused flash-style kernel (3-sweep forward,
+  3-kernel backward, one gradient mode). Rewritten Sep 19 (1458 -> 430 lines); the old multi-mode kernel is in git history.
 - Default `stieltjes_impl` is **triton** (`sparse_gemma.py`). Triton is used for training and unpadded prefill;
   decode and left-padded batches fall back to eager. `stieltjes_eager` as a *method name* in `run_one.sh`
   forces eager everywhere (OOMs at ~4k prefill on 40 GB; kept only for the impl comparison).
-- fp32 D=64 uses 64x64 tiles on A100-class smem (128x64 backward exceeds 166,912 B).
+- fp32 D=64 uses 64x64 tiles on A100-class smem (128x64 backward exceeds 166,912 B); consumer GPUs get 32x32.
+- Tests (`synthetic/tests/test_stieltjes_{eager,triton_alibi,impl_layer}.py`) cover q in {1..16}, d in {1,1.5,2,4,inf},
+  fp32/bf16, ALiBi, padded batches, the AS scale; the triton test also reports the unnormalised row-sum residual |S-1|.
 - Results before Sep 10 (everything in `reproduction_0907.md`) were produced with the eager path, which is
-  why the Stieltjes MQMTAR ladder there stops at 64x and Copy 64x is OOM. Those cells are the open question.
+  why the Stieltjes MQMTAR ladder there stops at 64x and Copy 64x is OOM (filled in 0913).
 
 ## Method overrides (Hydra, all NAPE; canonical copy lives in `experiments/osc/run_one.sh`)
 
 ```
 common:    ++model.net.apply_rotary=False ++model.net.apply_nape=True
 softmax:   model.net.entmax_alpha=1.0 ++model.net.attn_implementation=flash_attention_2 ++model.net.use_fast_attn=True ++model.net.attn_scale_type=null
+entmax:    model.net.entmax_alpha=1.5 ++model.net.attn_implementation=eager ++model.net.use_fast_attn=True ++model.net.attn_scale_type=null
 asentmax:  model.net.entmax_alpha=1.5 ++model.net.attn_implementation=eager ++model.net.use_fast_attn=True ++model.net.attn_scale_type=adapt-softplus-tanh ++model.net.attn_scale_proj_bias=True
-stieltjes: model.net.entmax_alpha=1.0 ++model.net.attn_type=stieltjes ++model.net.stieltjes_q=4.0 ++model.net.stieltjes_num_iter=30 ++model.net.stieltjes_impl=triton ++model.net.attn_implementation=eager ++model.net.use_fast_attn=False ++model.net.attn_scale_type=null
-(not run yet: topk  ++model.net.attn_type=topk ++model.net.topk_size=32 alpha=1.0;  ssmax alpha=1.0 attn_scale_type=nakanishi;  entmax alpha=1.5 attn_scale_type=null)
+stieltjes: model.net.entmax_alpha=1.0 ++model.net.attn_type=stieltjes ++model.net.stieltjes_q=4.0 ++model.net.stieltjes_window=0 ++model.net.stieltjes_num_iter=30 ++model.net.stieltjes_impl=triton ++model.net.attn_implementation=eager ++model.net.use_fast_attn=False ++model.net.attn_scale_type=null
+  stieltjes_q16: as stieltjes with stieltjes_q=16.0      wstieltjes: stieltjes_window=2.0      aswstieltjes: wstieltjes + the asentmax scale flags
+(not run yet: topk  ++model.net.attn_type=topk ++model.net.topk_size=32 alpha=1.0;  ssmax alpha=1.0 attn_scale_type=nakanishi)
 ```
 
-Per-task data paths, step budgets, ladder lengths and LR grids: `run_one.sh` (case block) and `submit.sh`.
+Per-task data paths, step budgets, ladder lengths and LR grids: `run_one.sh` (case block), `submit.sh`, `submit_lrsweep.sh`, `submit_variants.sh`.
+Local checks before any OSC spend: `bash experiments/tests/smoke_stieltjes_local.sh [method...]` (60 steps + eval, ~1 min/method)
+and `bash experiments/tests/learn1500_local.sh [method...]` (1500 steps, loss trajectory, ~1.5 min/method).
 
 ## OSC (Ohio Supercomputer Center, cluster Ascend, project PAS2836)
 

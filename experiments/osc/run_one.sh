@@ -53,17 +53,20 @@ case $method in
   # stieltjes / asstieltjes: fused Triton kernel (default stieltjes_impl=triton) for training and
   # unpadded prefill, eager fallback for decode + left-padded batches. *_eager variants force the
   # dense eager path everywhere (O(N^2) fp32 scores: OOMs at ~4k prefill) — kept for comparison.
-  stieltjes|stieltjes_eager)
-             OV=(model.net.entmax_alpha=1.0 ++model.net.attn_type=stieltjes ++model.net.stieltjes_q=4.0 ++model.net.stieltjes_num_iter=30
-                 ++model.net.stieltjes_impl=$([[ $method == *_eager ]] && echo eager || echo triton)
+  # Variants (Sep 19): stieltjes_q16 (dense, q=16), wstieltjes (windowed q=4 d=2),
+  # aswstieltjes (windowed + adaptive scale). Window d=2 -> c = 2^-4.
+  stieltjes|stieltjes_eager|stieltjes_q16|wstieltjes|aswstieltjes|asstieltjes|asstieltjes_eager)
+             SQ=4.0; SW=0; SCALE=(++model.net.attn_scale_type=null)
+             [[ $method == stieltjes_q16 ]] && SQ=16.0
+             [[ $method == *wstieltjes ]] && SW=2.0
+             [[ $method == as* ]] && SCALE=(++model.net.attn_scale_type=adapt-softplus-tanh ++model.net.attn_scale_proj_bias=True)
+             OV=(model.net.entmax_alpha=1.0 ++model.net.attn_type=stieltjes ++model.net.stieltjes_q=$SQ ++model.net.stieltjes_window=$SW
+                 ++model.net.stieltjes_num_iter=30 ++model.net.stieltjes_impl=$([[ $method == *_eager ]] && echo eager || echo triton)
                  ++model.net.attn_implementation=eager ++model.net.use_fast_attn=False
+                 "${SCALE[@]}" ++model.net.apply_rotary=False ++model.net.apply_nape=True) ;;
+  # entmax: plain 1.5-entmax without the adaptive scale (the paper's "Entmax" row; control for wstieltjes)
+  entmax)    OV=(model.net.entmax_alpha=1.5 ++model.net.attn_implementation=eager ++model.net.use_fast_attn=True
                  ++model.net.attn_scale_type=null ++model.net.apply_rotary=False ++model.net.apply_nape=True) ;;
-  asstieltjes|asstieltjes_eager)
-             OV=(model.net.entmax_alpha=1.0 ++model.net.attn_type=stieltjes ++model.net.stieltjes_q=4.0 ++model.net.stieltjes_num_iter=30
-                 ++model.net.stieltjes_impl=$([[ $method == *_eager ]] && echo eager || echo triton)
-                 ++model.net.attn_implementation=eager ++model.net.use_fast_attn=False
-                 ++model.net.attn_scale_type=adapt-softplus-tanh ++model.net.attn_scale_proj_bias=True
-                 ++model.net.apply_rotary=False ++model.net.apply_nape=True) ;;
   *) log "unknown method $method"; exit 1 ;;
 esac
 # NaN guard (LR sweep, Sep 13): stop training at the next validation check once the train loss is
