@@ -17,8 +17,9 @@ confidence estimate *before* OSC compute is spent; results reported as tables wi
 
 | file | status |
 |---|---|
-| `context/variants_0919_plan.md` | **CURRENT plan** — Stieltjes variants batch (q=16, windowed d=2, AS-windowed, entmax control, asentmax mqmtar fix): guessed LRs, predictions, job IDs |
-| `context/reproduction_0913.md` | **CURRENT results** — LR sweep (softmax + stieltjes, bracketed grids, 3 seeds at top-2 LRs), findings §4, selection delta §6, pending §7 |
+| `context/reproduction_0920.md` | **CURRENT results** — Stieltjes variants batch (q=16, windowed, AS-windowed, entmax control): headline tables, findings §3, predictions scored §4, pending §7 |
+| `context/variants_0919_plan.md` | plan for the above — Stieltjes variants batch (q=16, windowed d=2, AS-windowed, entmax control, asentmax mqmtar fix): guessed LRs, predictions, job IDs |
+| `context/reproduction_0913.md` | LR sweep (still the reference for the softmax/stieltjes-q4 rows) (softmax + stieltjes, bracketed grids, 3 seeds at top-2 LRs), findings §4, selection delta §6, pending §7 |
 | `context/reproduction_0913_all_runs.md` | appendix: every softmax/stieltjes (task, seed, lr) run incl. tie-break ladders |
 | `context/reproduction_0907.md` | **SUPERSEDED** by 0913 — first paper-protocol pass; still the reference for the ASEntmax rows and the protocol write-up (§1, §4) |
 | `context/reproduction_0907_all_runs.md` | appendix to the above |

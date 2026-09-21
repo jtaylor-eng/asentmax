@@ -123,13 +123,25 @@ Copy 64x = 50 (paper 0.0), 32x = 86 (96.3); sort 4x = 53 (57.8); reverse 4x = 0-
 (paper 92.7/66.8/9.3). Copy is the notable one: with the repo's adasplash entmax the "sparse maps cannot
 copy at 64x" story does not hold.
 
-### 3.6 Kernel speed regression on the A100 (open)
+### 3.6 Kernel speed regression on the A100: found and fixed (tile size)
 
 Train wall for the same task, old kernel (Sep 14 sweep) vs the rewritten kernel (this batch):
 sort 2.8 -> 4.5 h, copy 1.8 -> 3.8 h, reverse 5.3 -> ~9.2 h (implied; hence the nine timeouts),
-mqmtar 5.9 -> 5.9 h. Entmax rows the same day ran at their Sep 6 speed, so it is not contention. On the
-local RTX 4070 Ti (32x32 tiles) the new kernel is 1.6x *faster* fwd+bwd. Suspect: the A100 128x64 bf16
-tile with the new in-loop score recomputation. Job 7462343 runs old vs new plus a tile ablation on an A100.
+mqmtar 5.9 -> 5.9 h. A100 bench (job 7462343, bf16, B x 8 heads x N x 32, fwd+bwd, ms):
+
+| N | old kernel | new, 128x64 (default used in this batch) | new 64x64 | new 32x32 | new 64x32 |
+|---|---:|---:|---:|---:|---:|
+| 64 | 4.55 | 3.35 | 1.55 | 1.39 | **0.90** |
+| 128 | 5.01 | 2.91 | 4.27 | 2.55 | **2.58** |
+| 256 | 5.84 | 8.14 | 7.77 | 4.82 | **5.17** |
+| 2048 | 30.5 | 58.6 | 52.2 | 36.4 | **36.2** |
+
+The rewritten kernel keeps the Q tile resident across three sweeps and recomputes scores per sweep, which
+favours a short M tile; the inherited 128x64 choice was tuned for the old kernel. With 64x32 the new kernel
+is 1.1-5x faster than the old one at every shape. Fixed in c48c321 (bf16/fp16 -> 64x32). Validation of the
+64x32 tile against the eager reference on the A100 is job 7462977; the follow-up jobs' *eval* phases
+(new python processes) already pick up 64x32, their training phases run with the tile they started with.
+If 7462977 reports a failure, re-ladder those runs.
 
 ## 4. Predictions scored (plan §3)
 
@@ -164,7 +176,8 @@ w20k 6 x ~10 h, matched-LR 6 x ~4 h, bench 0.5 h, last.ckpt ladder ~1 h: ~125 GP
 
 | job | what | fills |
 |---|---|---|
-| 7462343 | A100 kernel bench old vs new + tile ablation | §3.6 |
+| 7462343 | A100 kernel bench old vs new + tile ablation | §3.6 (done; equivalence part pending) |
+| 7462977 | 64x32 / 128x64 tile equivalence + layer test on the A100 | §3.6 validation |
 | 7462344 x9 | reverse Stieltjes rows resume (12 h wall) | reverse table |
 | 7462345 x6 | mqmtar asentmax_w20k + aswstieltjes_w20k, 3 seeds, 2e-4 | §3.4, mqmtar comparator |
 | 7462346 x3 / 7462347 x3 | aswstieltjes at sort 2e-4 / copy 1e-3 | §3.3 |
