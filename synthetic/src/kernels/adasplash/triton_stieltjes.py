@@ -315,7 +315,9 @@ def _bwd_dq_kernel(
 def _pick_blocks(D, elem_size, device):
     """Tile sizes shared by forward and backward (they must match). The backward
     (K/V + Q/dO tiles resident) binds shared memory: fp32 D=64 at 128x64 needs
-    ~200 KB (H100 ok, A100's 164 KB not); consumer GPUs (~100 KB) need 32x32."""
+    ~200 KB (H100 ok, A100's 164 KB not); consumer GPUs (~100 KB) need 32x32.
+    bf16/fp16: 64x32 measured fastest on A100 at every N in 64..2048 (job 7462343,
+    2026-09-21: 128x64 was 2-4x slower than 64x32 for this kernel)."""
     try:
         idx = device.index if device.index is not None else torch.cuda.current_device()
         smem = triton.runtime.driver.active.utils.get_device_properties(idx)["max_shared_mem"]
@@ -329,7 +331,7 @@ def _pick_blocks(D, elem_size, device):
         if D >= 64 and smem < 200 * 1024:
             return 64, 64
         return 128, 64
-    return (128, 64) if D <= 64 else (64, 64)
+    return 64, 32
 
 
 def _strides(t):

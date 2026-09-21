@@ -3,11 +3,18 @@ stieltjes_normalize with make_bias_window, forward and backward, fp32 + bf16, pl
 the unnormalised row-sum residual |S-1| (a wrong λ cannot hide behind p = w/S).
 Run from synthetic/:  .venv/bin/python tests/test_stieltjes_triton_alibi.py
 """
-import sys, torch
+import sys, os, torch
 sys.path.insert(0, ".")
+import src.kernels.adasplash.triton_stieltjes as _tsm
 from src.kernels.adasplash.triton_stieltjes import stieltjes_attention, stieltjes_solver_residual
 from src.attention.stieltjes_eager import stieltjes_normalize
 from src.models.architectures.sparse_gemma import make_bias_window, get_nape_slopes
+
+# STIELTJES_TILES=64x32 forces a tile size (to validate a non-default tile on a given GPU)
+if os.environ.get("STIELTJES_TILES"):
+    _bm, _bn = map(int, os.environ["STIELTJES_TILES"].split("x"))
+    _tsm._pick_blocks = lambda D, e, d: (_bm, _bn)
+    print("forcing tiles", (_bm, _bn))
 
 torch.manual_seed(0)
 dev = "cuda"
