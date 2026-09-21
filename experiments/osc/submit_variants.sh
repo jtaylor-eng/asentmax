@@ -63,5 +63,22 @@ case $MODE in
   manifest)
     MAN=$2; task=$(awk 'NR==1{print $1}' "$MAN")
     submit_array varm "$task" "$MAN" "${3:-${WALL[$task]}}" ;;
-  *) echo "usage: $0 smoke|full|manifest <file> [walltime]" >&2; exit 1 ;;
+  followup)
+    # Sep 20 follow-ups (see context/variants_0919_plan.md §6):
+    #  reverse resume : the 9 Stieltjes-variant runs that hit the 8 h wall at ~205k/234k steps (12 h wall)
+    #  mqmtar w20k    : asentmax + aswstieltjes with 20k warmup, 3 seeds at 2e-4 (the only config that ever escaped)
+    #  matched LR     : aswstieltjes at ASEntmax's actual optimum, sort 2e-4 / copy 1e-3, 3 seeds
+    MAN="$RESULTS_ROOT/manifests/variants_followup_reverse_${COMMIT}.txt"; : > "$MAN"
+    for s in 1 2 3; do echo "reverse stieltjes_q16 $s 3.2e-3"; echo "reverse wstieltjes $s 1.6e-3"; echo "reverse aswstieltjes $s 4e-4"; done >> "$MAN"
+    submit_array varf reverse "$MAN" "12:00:00"
+    MAN="$RESULTS_ROOT/manifests/variants_followup_mqmtar_${COMMIT}.txt"; : > "$MAN"
+    for s in 1 2 3; do echo "mqmtar asentmax_w20k $s 2e-4"; echo "mqmtar aswstieltjes_w20k $s 2e-4"; done >> "$MAN"
+    submit_array varf mqmtar "$MAN" "${WALL[mqmtar]}"
+    MAN="$RESULTS_ROOT/manifests/variants_followup_sort_${COMMIT}.txt"; : > "$MAN"
+    for s in 1 2 3; do echo "sort aswstieltjes $s 2e-4"; done >> "$MAN"
+    submit_array varf sort "$MAN" "${WALL[sort]}"
+    MAN="$RESULTS_ROOT/manifests/variants_followup_copy_${COMMIT}.txt"; : > "$MAN"
+    for s in 1 2 3; do echo "copy aswstieltjes $s 1e-3"; done >> "$MAN"
+    submit_array varf copy "$MAN" "${WALL[copy]}" ;;
+  *) echo "usage: $0 smoke|full|followup|manifest <file> [walltime]" >&2; exit 1 ;;
 esac

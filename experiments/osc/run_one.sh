@@ -44,7 +44,10 @@ if [ -n "${TMPDIR:-}" ] && [ -d "$TMPDIR" ]; then
 fi
 
 # ---------------- method overrides (all NAPE) ----------------
-case $method in
+# Suffix _w20k = same method with 20k warmup (repo default) instead of the paper's 10k; separate run dir.
+WARMUP_OV=(); base=$method
+if [[ $method == *_w20k ]]; then WARMUP_OV=(model.scheduler.instance.num_warmup_steps=20000); base=${method%_w20k}; fi
+case $base in
   softmax)   OV=(model.net.entmax_alpha=1.0 ++model.net.attn_implementation=flash_attention_2 ++model.net.use_fast_attn=True
                  ++model.net.attn_scale_type=null ++model.net.apply_rotary=False ++model.net.apply_nape=True) ;;
   asentmax)  OV=(model.net.entmax_alpha=1.5 ++model.net.attn_implementation=eager ++model.net.use_fast_attn=True
@@ -69,6 +72,7 @@ case $method in
                  ++model.net.attn_scale_type=null ++model.net.apply_rotary=False ++model.net.apply_nape=True) ;;
   *) log "unknown method $method"; exit 1 ;;
 esac
+OV+=("${WARMUP_OV[@]}")
 # NaN guard (LR sweep, Sep 13): stop training at the next validation check once the train loss is
 # non-finite instead of burning the full walltime on a diverged run. Patience is effectively
 # infinite so this never stops on "no improvement"; the best-by-monitor ckpt saved before the
