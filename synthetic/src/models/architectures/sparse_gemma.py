@@ -237,26 +237,27 @@ class SparseGemma2Attention(Gemma2Attention):
             self.topk_attn = AttentionNoCache(nn.Softmax(-1))
             self.topk_args = {'topk': config.topk_size}
         elif self.attn_type == "stieltjes":
-            # Dense Stieltjes mapping p_j ∝ (λ - s_j)^{-q}. NAPE/ALiBi bias and
-            # the causal mask are added to the logits exactly as in the eager
-            # entmax path. `stieltjes_impl` selects the implementation:
-            #   triton (default): fused flash kernel (normalize=True,
-            #          ift_grad=True — same semantics as eager, verified to
-            #          1e-6 fwd/bwd) for the square, right-padded case
-            #          (training steps and unpadded prefill); decode steps and
-            #          left-padded generation batches fall back to eager.
-            #   eager : stieltjes_eager.stieltjes_normalize everywhere —
-            #          bracketed solver, exact implicit-function gradient,
-            #          materialises q_len x k_len fp32 scores (OOMs at ~4k).
+            # Stieltjes mapping p_j ∝ [(λ - s_j)^{-q} - c]_+, c = d^{-q}; d = stieltjes_window
+            # (None/0 = dense). NAPE/ALiBi bias and the causal mask are added to the logits
+            # exactly as in the eager entmax path. `stieltjes_impl`:
+            #   triton (default): fused flash kernel (same semantics as eager, verified
+            #          to 1e-6 fwd/bwd by tests/test_stieltjes_triton_alibi.py) for the
+            #          square, right-padded case (training steps and unpadded prefill);
+            #          decode steps and left-padded generation batches fall back to eager.
+            #   eager : stieltjes_eager.stieltjes_normalize everywhere — materialises
+            #          q_len x k_len fp32 scores (OOMs at ~4k).
             # Both keep use_fast_attn off (the entmax/flash paths don't apply).
             self.use_fast_attn = False
             self.stieltjes_q = float(getattr(config, "stieltjes_q", 4.0))
             self.stieltjes_num_iter = int(getattr(config, "stieltjes_num_iter", 30))
             self.stieltjes_impl = str(getattr(config, "stieltjes_impl", "triton"))
+            w = getattr(config, "stieltjes_window", None)
+            self.stieltjes_window = None if (w is None or float(w) <= 0) else float(w)
             if self.stieltjes_impl not in ("eager", "triton"):
                 raise ValueError(f"unknown stieltjes_impl {self.stieltjes_impl!r}")
             # ALiBi bias is built per call by make_bias_window (see forward).
-            self.attn_func = lambda x: stieltjes_normalize(x, q=self.stieltjes_q, num_iter=self.stieltjes_num_iter)
+            self.attn_func = lambda x: stieltjes_normalize(
+                x, q=self.stieltjes_q, num_iter=self.stieltjes_num_iter, window=self.stieltjes_window)
         elif self.attn_type == "stick-break":
             pass
         else:
@@ -315,8 +316,7 @@ class SparseGemma2Attention(Gemma2Attention):
         slopes = self.alibi_slopes.to(q.device) if (self.apply_nape and self.alibi_slopes is not None) else None
         return triton_stieltjes_attention(
             q, k, v, causal=True, sm_scale=self.qk_scale, stieltjes_q=self.stieltjes_q,
-            num_iter=self.stieltjes_num_iter, normalize=True, ift_grad=True, solver="nr",
-            alibi_slopes=slopes,
+            num_iter=self.stieltjes_num_iter, window=self.stieltjes_window, alibi_slopes=slopes,
         )
 
     def forward(

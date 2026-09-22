@@ -1,145 +1,142 @@
 """
-Eager (dense) Stieltjes attention normalization.
+Eager (dense-materialised) Stieltjes attention normalisation, dense or windowed.
 
-    p_j = (λ - s_j)^{-q} / S,   S = Σ_j (λ - s_j)^{-q},   λ chosen so S = 1
+    w_j = [ (λ - s_j)^{-q} - c ]_+ ,   c = d^{-q}   (window d; c = 0 is the dense map)
+    λ solved per row so that Σ_j w_j = 1;  p = w / Σ w  (the division only removes
+    the solver residual).
 
-Reference semantics match ``kernels/adasplash/triton_stieltjes.py`` with
-``normalize=True`` and a fully converged solver (the Triton kernel with
-constant-1.1 Newton init does NOT converge at long N for q <= 2; here λ is
-solved to machine precision by bracketed Newton, so no length-dependent
-solver artifact can leak into the OOD numbers).
+Windowing (context/stieltjes_proposal.tex §2): tokens more than ~d below the top
+get exactly zero mass, so the map is sparse with an n-independent threshold;
+d -> inf recovers the dense map bit-for-bit (max(w - 0, 0) == w).
 
-Gradient: exact implicit-function gradient of the normalized mapping
-(same formula as the kernel's IFT_NORM mode):
+Solver: after centring (row max = 0) the root is bracketed by
+    lo = (1 + c)^{-1/q}   (top token alone already gives w_top = 1 => f(lo) >= 0)
+    hi = min(d, K^{1/q})  (every term clipped at λ = d; Σ (K^{1/q} - s)^{-q} <= 1)
+with K = number of finite entries. 12 bisections then safeguarded Newton; f is
+convex and decreasing in λ so this is monotone for any q > 0, any N, any d.
 
-    r_j   = (λ - s_j)^{-q-1}
-    D     = Σ_j r_j
-    δ     = Σ_j dP_j r_j / D
+Gradient (implicit-function theorem through Σ_A w = 1 over the support A):
+    r_j   = (λ - s_j)^{-q-1} [j in A]
+    δ     = Σ_j dP_j r_j / Σ_j r_j
     dL/ds_j = (q / S) r_j (dP_j - δ)
+identical to the dense formula with r zeroed off the support. Masked logits
+(<= -1e30 or non-finite) get zero weight and zero gradient.
 
-Masked logits (very negative) get exactly zero weight and zero gradient.
-Intended for the eager attention path (q_len x k_len materialised), i.e.
-training at short context and autoregressive evaluation; the O(N^2) memory
-makes it unsuitable for prefill beyond ~8k tokens.
+Reference semantics for ``kernels/adasplash/triton_stieltjes.py``. O(N^2) fp32:
+fine for training at short context and decode; not for prefill beyond ~4k.
 """
+import math
 import torch
 
 
-def _solve_lambda(x: torch.Tensor, q: float, num_iter: int = 30, eps: float = 1e-6) -> torch.Tensor:
-    """Solve Σ_j (λ - x_j)^{-q} = 1 per row for centred logits (row max == 0).
+def _window_c(q: float, window) -> float:
+    return 0.0 if (window is None or window <= 0 or math.isinf(window)) else float(window) ** (-q)
 
-    Bracketed Newton: root lies in [1, K^{1/q}] where K = number of finite
-    entries in the row (f(1) >= 0 from the max entry alone; f(K^{1/q}) <= 0).
-    Newton steps that leave the bracket fall back to bisection, so the solve
-    is monotone and converges for any q > 0 and any N.
-    Returns λ with shape x.shape[:-1] + (1,), dtype float32.
-    """
-    finite = torch.isfinite(x) & (x > -1e30)
-    K = finite.sum(dim=-1, keepdim=True).clamp(min=1).to(x.dtype)
-    lo = torch.ones_like(K)
+
+def _solve_lambda(x, q: float, c: float, num_iter: int = 30, eps: float = 1e-6):
+    """λ per row for centred logits x (row max == 0). Shape x.shape[:-1] + (1,)."""
+    valid = torch.isfinite(x) & (x > -1e30)
+    K = valid.sum(dim=-1, keepdim=True).clamp(min=1).to(x.dtype)
+    lo = torch.full_like(K, (1.0 + c) ** (-1.0 / q))
     hi = K.pow(1.0 / q) + eps
-    # Hybrid: a fixed number of bisection steps first (the residual can be
-    # ~eps^{-q} near λ=1 when the top two logits nearly tie, which stalls
-    # Newton), then safeguarded Newton, which is quadratic once close.
+    if c > 0:
+        hi = hi.clamp(max=c ** (-1.0 / q) + eps)
     lam = 0.5 * (lo + hi)
     n_bisect = min(12, num_iter // 2)
-
     for it in range(num_iter):
-        diff = (lam - x).clamp(min=eps)
-        inv = diff.reciprocal()
-        w = inv.pow(q)
-        f = w.sum(dim=-1, keepdim=True) - 1.0
-        fp = -q * (w * inv).sum(dim=-1, keepdim=True)
-        # update bracket by sign of f (f decreasing in λ)
+        inv = (lam - x).clamp(min=eps).reciprocal()
+        w = inv.pow(q) - c
+        on = valid & (w > 0)
+        f = torch.where(on, w, torch.zeros_like(w)).sum(dim=-1, keepdim=True) - 1.0
         lo = torch.where(f > 0, lam, lo)
         hi = torch.where(f <= 0, lam, hi)
         if it < n_bisect:
             lam = 0.5 * (lo + hi)
             continue
-        newton = lam - f / fp
+        fp = -q * torch.where(on, (w + c) * inv, torch.zeros_like(w)).sum(dim=-1, keepdim=True)
+        newton = lam - f / fp.clamp(max=-1e-30)
         inside = (newton > lo) & (newton < hi)
         lam = torch.where(inside, newton, 0.5 * (lo + hi))
     return lam
 
 
-# torch.compile fuses the ~8 tiny kernels per Newton iteration into a few; ~7x faster at
-# training shapes (B=128,H=8,N=64) and bit-identical. Falls back to eager if compile is
-# unavailable (e.g. no Triton / CPU).
-_solve_lambda_compiled = None
+# torch.compile fuses the per-iteration elementwise kernels (~7x at training shapes);
+# falls back to eager if compile is unavailable.
+_solve_compiled = None
 
-def _solve(x, q, num_iter, eps):
-    global _solve_lambda_compiled
+def _solve(x, q, c, num_iter, eps):
+    global _solve_compiled
     if x.is_cuda:
-        if _solve_lambda_compiled is None:
+        if _solve_compiled is None:
             try:
-                _solve_lambda_compiled = torch.compile(_solve_lambda, dynamic=True)
+                _solve_compiled = torch.compile(_solve_lambda, dynamic=True)
             except Exception:
-                _solve_lambda_compiled = _solve_lambda
+                _solve_compiled = _solve_lambda
         try:
-            return _solve_lambda_compiled(x, q, num_iter, eps)
+            return _solve_compiled(x, q, c, num_iter, eps)
         except Exception:
-            _solve_lambda_compiled = _solve_lambda
-    return _solve_lambda(x, q, num_iter, eps)
+            _solve_compiled = _solve_lambda
+    return _solve_lambda(x, q, c, num_iter, eps)
 
 
 class _StieltjesNormalize(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, scores: torch.Tensor, q: float, num_iter: int, eps: float):
+    def forward(ctx, scores, q: float, c: float, num_iter: int, eps: float):
         s = scores if scores.dtype == torch.float64 else scores.to(torch.float32)
-        s_max = s.max(dim=-1, keepdim=True).values
-        x = s - s_max
+        x = s - s.max(dim=-1, keepdim=True).values
         with torch.no_grad():
-            lam = _solve(x, q, num_iter, eps)
-        diff = (lam - x).clamp(min=eps)
-        inv = diff.reciprocal()
-        w = inv.pow(q)
-        # zero out masked entries explicitly (they underflow to 0 anyway)
-        valid = torch.isfinite(s) & (s > -1e30)
-        w = torch.where(valid, w, torch.zeros_like(w))
+            lam = _solve(x, q, c, num_iter, eps)
+        inv = (lam - x).clamp(min=eps).reciprocal()
+        w = inv.pow(q) - c
+        on = torch.isfinite(s) & (s > -1e30) & (w > 0)
+        w = torch.where(on, w, torch.zeros_like(w))
         S = w.sum(dim=-1, keepdim=True).clamp(min=eps)
-        p = w / S
-        r = torch.where(valid, w * inv, torch.zeros_like(w))
+        r = torch.where(on, (w + c) * inv, torch.zeros_like(w))
         ctx.save_for_backward(r, S)
         ctx.q = q
-        return p
+        return w / S
 
     @staticmethod
-    def backward(ctx, dP: torch.Tensor):
+    def backward(ctx, dP):
         r, S = ctx.saved_tensors
-        q = ctx.q
         dP = dP.to(r.dtype)
         D = r.sum(dim=-1, keepdim=True).clamp(min=1e-30)
         delta = (dP * r).sum(dim=-1, keepdim=True) / D
-        dS = (q / S) * r * (dP - delta)
-        return dS, None, None, None
+        return (ctx.q / S) * r * (dP - delta), None, None, None, None
 
 
-def stieltjes_normalize(scores: torch.Tensor, q: float = 4.0, num_iter: int = 30, eps: float = 1e-6) -> torch.Tensor:
-    """Row-wise normalized Stieltjes mapping over the last dim (drop-in for softmax)."""
-    return _StieltjesNormalize.apply(scores, float(q), int(num_iter), float(eps))
+def stieltjes_normalize(scores, q: float = 4.0, num_iter: int = 30, window=None, eps: float = 1e-6):
+    """Row-wise Stieltjes mapping over the last dim (drop-in for softmax).
+    window=d gives the sparse windowed map (c = d^-q); None/0/inf is dense."""
+    return _StieltjesNormalize.apply(scores, float(q), _window_c(float(q), window), int(num_iter), float(eps))
 
 
-def stieltjes_reference(scores: torch.Tensor, q: float = 4.0) -> torch.Tensor:
-    """Slow autograd-through-bisection reference (for tests only)."""
+def stieltjes_reference(scores, q: float = 4.0, window=None, n_bisect: int = 200):
+    """Slow fp64 reference for tests: 200 bisections for λ, then one differentiable
+    Newton step so autograd gives the exact implicit-function gradient at the root."""
+    q = float(q); c = _window_c(q, window)
     s = scores.to(torch.float64)
     x = s - s.max(dim=-1, keepdim=True).values.detach()
     valid = torch.isfinite(s) & (s > -1e30)
     K = valid.sum(-1, keepdim=True).to(torch.float64)
-    lo = torch.ones_like(K); hi = K.pow(1.0 / q) + 1e-6
+    lo = torch.full_like(K, (1.0 + c) ** (-1.0 / q))
+    hi = K.pow(1.0 / q) + 1e-6
+    if c > 0:
+        hi = hi.clamp(max=c ** (-1.0 / q) + 1e-6)
+
+    def w_of(lam, xx):
+        w = (lam - xx).clamp(min=1e-12).pow(-q) - c
+        return torch.where(valid & (w > 0), w, torch.zeros_like(w))
+
     with torch.no_grad():
-        for _ in range(200):
+        for _ in range(n_bisect):
             mid = 0.5 * (lo + hi)
-            f = torch.where(valid, (mid - x).clamp(min=1e-12).pow(-q), torch.zeros_like(x)).sum(-1, keepdim=True) - 1
+            f = w_of(mid, x).sum(-1, keepdim=True) - 1
             lo = torch.where(f > 0, mid, lo); hi = torch.where(f <= 0, mid, hi)
         lam = 0.5 * (lo + hi)
-    # differentiate through the implicit λ using the exact fixed point: p = w/S with λ(s)
-    # Implement λ(s) gradient via a one-step Newton correction, which is exact at the root.
-    lam = lam.detach()
-    diff = (lam - x).clamp(min=1e-12)
-    w = torch.where(valid, diff.pow(-q), torch.zeros_like(x))
+    w = w_of(lam, x)
     f = w.sum(-1, keepdim=True) - 1
-    fp = -q * torch.where(valid, diff.pow(-q - 1), torch.zeros_like(x)).sum(-1, keepdim=True)
-    lam = lam - f / fp  # differentiable Newton step (exact gradient at the root)
-    diff = (lam - x).clamp(min=1e-12)
-    w = torch.where(valid, diff.pow(-q), torch.zeros_like(x))
+    fp = -q * torch.where(w > 0, (w + c) / (lam - x).clamp(min=1e-12), torch.zeros_like(w)).sum(-1, keepdim=True)
+    lam = lam - f / fp
+    w = w_of(lam, x)
     return (w / w.sum(-1, keepdim=True)).to(scores.dtype)

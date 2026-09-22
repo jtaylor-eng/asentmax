@@ -44,7 +44,10 @@ if [ -n "${TMPDIR:-}" ] && [ -d "$TMPDIR" ]; then
 fi
 
 # ---------------- method overrides (all NAPE) ----------------
-case $method in
+# Suffix _w20k = same method with 20k warmup (repo default) instead of the paper's 10k; separate run dir.
+WARMUP_OV=(); base=$method
+if [[ $method == *_w20k ]]; then WARMUP_OV=(model.scheduler.instance.num_warmup_steps=20000); base=${method%_w20k}; fi
+case $base in
   softmax)   OV=(model.net.entmax_alpha=1.0 ++model.net.attn_implementation=flash_attention_2 ++model.net.use_fast_attn=True
                  ++model.net.attn_scale_type=null ++model.net.apply_rotary=False ++model.net.apply_nape=True) ;;
   asentmax)  OV=(model.net.entmax_alpha=1.5 ++model.net.attn_implementation=eager ++model.net.use_fast_attn=True
@@ -53,23 +56,46 @@ case $method in
   # stieltjes / asstieltjes: fused Triton kernel (default stieltjes_impl=triton) for training and
   # unpadded prefill, eager fallback for decode + left-padded batches. *_eager variants force the
   # dense eager path everywhere (O(N^2) fp32 scores: OOMs at ~4k prefill) — kept for comparison.
-  stieltjes|stieltjes_eager)
-             OV=(model.net.entmax_alpha=1.0 ++model.net.attn_type=stieltjes ++model.net.stieltjes_q=4.0 ++model.net.stieltjes_num_iter=30
-                 ++model.net.stieltjes_impl=$([[ $method == *_eager ]] && echo eager || echo triton)
+  # Variants (Sep 19): stieltjes_q16 (dense, q=16), wstieltjes (windowed q=4 d=2),
+  # aswstieltjes (windowed + adaptive scale). Window d=2 -> c = 2^-4.
+  stieltjes|stieltjes_eager|stieltjes_q16|wstieltjes|aswstieltjes|asstieltjes|asstieltjes_eager)
+             SQ=4.0; SW=0; SCALE=(++model.net.attn_scale_type=null)
+             [[ $method == stieltjes_q16 ]] && SQ=16.0
+             [[ $method == *wstieltjes ]] && SW=2.0
+             [[ $method == as* ]] && SCALE=(++model.net.attn_scale_type=adapt-softplus-tanh ++model.net.attn_scale_proj_bias=True)
+             OV=(model.net.entmax_alpha=1.0 ++model.net.attn_type=stieltjes ++model.net.stieltjes_q=$SQ ++model.net.stieltjes_window=$SW
+                 ++model.net.stieltjes_num_iter=30 ++model.net.stieltjes_impl=$([[ $method == *_eager ]] && echo eager || echo triton)
                  ++model.net.attn_implementation=eager ++model.net.use_fast_attn=False
+                 "${SCALE[@]}" ++model.net.apply_rotary=False ++model.net.apply_nape=True) ;;
+  # entmax: plain 1.5-entmax without the adaptive scale (the paper's "Entmax" row; control for wstieltjes)
+  entmax)    OV=(model.net.entmax_alpha=1.5 ++model.net.attn_implementation=eager ++model.net.use_fast_attn=True
                  ++model.net.attn_scale_type=null ++model.net.apply_rotary=False ++model.net.apply_nape=True) ;;
-  asstieltjes|asstieltjes_eager)
-             OV=(model.net.entmax_alpha=1.0 ++model.net.attn_type=stieltjes ++model.net.stieltjes_q=4.0 ++model.net.stieltjes_num_iter=30
-                 ++model.net.stieltjes_impl=$([[ $method == *_eager ]] && echo eager || echo triton)
-                 ++model.net.attn_implementation=eager ++model.net.use_fast_attn=False
-                 ++model.net.attn_scale_type=adapt-softplus-tanh ++model.net.attn_scale_proj_bias=True
-                 ++model.net.apply_rotary=False ++model.net.apply_nape=True) ;;
   *) log "unknown method $method"; exit 1 ;;
 esac
+OV+=("${WARMUP_OV[@]}")
+# NaN guard (LR sweep, Sep 13): stop training at the next validation check once the train loss is
+# non-finite instead of burning the full walltime on a diverged run. Patience is effectively
+# infinite so this never stops on "no improvement"; the best-by-monitor ckpt saved before the
+# divergence is still evaluated, so a diverged LR is a valid (bracketing) sweep point.
+# trainer.min_epochs=0: the repo default (min_epochs=1) makes Lightning ignore the stop signal.
+TRAIN_OV=(trainer.min_epochs=0 +callbacks.early_stopping._target_=lightning.pytorch.callbacks.EarlyStopping
+     +callbacks.early_stopping.monitor=train/loss_step +callbacks.early_stopping.mode=min
+     +callbacks.early_stopping.patience=1000000000 +callbacks.early_stopping.check_finite=True
+     +callbacks.early_stopping.strict=True +callbacks.early_stopping.verbose=True)
 # Eager Stieltjes can't prefill 16k/65k in memory (O(N^2)); cap its ladder at 4096. The Triton
 # path is O(N*d) so the full ladder runs (at batch 1 for >= 2048, see below).
 if [[ $method == *stieltjes_eager ]] && [ "$task" = mqmtar ]; then
   STEMS=(test_0_64 test_1_128 test_2_256 test_4_1024 test_5_4096); LABELS=(ID 2x 4x 16x 64x)
+fi
+# TIEBREAK=1 (LR sweep): eval-only pass over the long VALIDATION splits from gen_tiebreak_val.sh
+# (stored as test_1<i>_val<len> so eval.py's test loader can select them). Used to rank runs whose
+# primary monitor is tied at 1.0. Writes ladder_tiebreak.tsv; never touches ladder.tsv.
+if [ "${TIEBREAK:-}" = 1 ]; then
+  case $task in
+    copy)   STEMS=(test_10_val1024 test_11_val2048); LABELS=(val16x val32x) ;;
+    mqmtar) STEMS=(test_10_val1024 test_11_val4096); LABELS=(val16x val64x) ;;
+    *) log "TIEBREAK not defined for $task"; exit 1 ;;
+  esac
 fi
 
 CKPT_DIR="$RUN/checkpoints"
@@ -96,7 +122,7 @@ else
     "++callbacks.model_checkpoint.dirpath=$CKPT_DIR" ++trainer.max_steps=$STEPS "${RESUME[@]}" "${SMOKE_EXTRA[@]}" \
     "++logger.wandb.project=asentmax-table1" "++logger.wandb.name=${task}-${method}-s${seed}-lr${lr}" \
     "++logger.wandb.group=${task}-${method}" "++logger.wandb.tags=[${task},${method},seed${seed}]" \
-    "${OV[@]}" >> "$RUN/train.log" 2>&1
+    "${OV[@]}" "${TRAIN_OV[@]}" >> "$RUN/train.log" 2>&1
   rc=$?
   if [ $rc -ne 0 ]; then log "TRAIN FAILED rc=$rc"; exit $rc; fi
   touch "$RUN/TRAIN_DONE"; log "TRAIN done"
@@ -106,6 +132,7 @@ fi
 # CKPT_OVERRIDE=last: evaluate the fully-trained last.ckpt instead (used when the primary
 # monitor was degenerate and the paper's BLEU fallback pick was not among the saved ckpts).
 LADDER_NAME="ladder.tsv"
+[ "${TIEBREAK:-}" = 1 ] && LADDER_NAME="ladder_tiebreak.tsv"
 if [ "${CKPT_OVERRIDE:-}" = "last" ]; then
   BEST="$CKPT_DIR/last.ckpt"; LADDER_NAME="ladder_last.tsv"
   [ -f "$BEST" ] || { log "ERROR: no last.ckpt"; exit 3; }
@@ -122,13 +149,16 @@ echo "$BEST" > "$RUN/best_ckpt${CKPT_OVERRIDE:+_$CKPT_OVERRIDE}.txt"
 # ---------------- 3) OOD ladder with early-stop on exact 0.0 ----------------
 LADDER="$RUN/$LADDER_NAME"
 if [ -f "$LADDER" ] && [ "$(wc -l < "$LADDER")" -ge "${#STEMS[@]}" ] && ! grep -q ERR "$LADDER"; then log "ladder already done"; else
-: > "$LADDER"
+# resume: keep rungs already scored (non-ERR, non-SKIPPED); only the missing ones are evaluated
+if [ -f "$LADDER" ]; then grep -v -E "ERR|SKIPPED" "$LADDER" > "$LADDER.tmp" || true; mv "$LADDER.tmp" "$LADDER"; else : > "$LADDER"; fi
 stopped=0
 for i in "${!STEMS[@]}"; do
-  stem=${STEMS[$i]}; label=${LABELS[$i]}; n=${stem##*_}
+  stem=${STEMS[$i]}; label=${LABELS[$i]}; n=$(echo "$stem" | grep -oE '[0-9]+$')
   if [ $stopped -eq 1 ]; then
     printf "%s\t%s\t%s\tSKIPPED\n" "$label" "$n" "$stem" >> "$LADDER"; log "  $label ($n): SKIPPED"; continue
   fi
+  cached=$(awk -F'\t' -v l="$label" '$1==l{print $4}' "$LADDER")
+  if [ -n "$cached" ]; then log "  $label ($n): $cached% (cached)"; [ "$cached" = "0.0" ] && stopped=1; continue; fi
   # mqmtar at >=16384: batch 1 to bound KV/prefill memory. Stieltjes at >=2048 too: eager for its
   # O(N^2) fp32 solver; triton because batch 1 means no left padding, so prefill takes the kernel.
   EXTRA=(); if [ "$n" -ge 16384 ] || { [[ $method == *stieltjes* ]] && [ "$n" -ge 2048 ]; }; then EXTRA=(data.batch_config.test.size=1); fi
