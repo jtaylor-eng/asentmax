@@ -4,10 +4,9 @@ Results for the batch planned in `variants_0919_plan.md` (predictions there, §3
 Protocol, data, checkpoints and selection rule are those of `reproduction_0913.md` §1/§6; nothing was
 re-run for the old rows. Raw dump: `experiments/osc/dump_runs.py` -> `runs_0920.json` (172 runs).
 
-Status: **complete except reverse last.ckpt ladders** (Sep 22). Main batch 47 elements (9 reverse timeouts resumed
-and finished), follow-ups §7 all done: kernel bench + tile fix validated, mqmtar 20k-warmup (6), matched-LR
-aswstieltjes (6), entmax s2 last.ckpt. Pending: reverse last.ckpt ladders for the 11 new rows (job 7479505,
-eval-only; the first pass laddered the uninformative step-11718 checkpoint, see §2 Reverse). Spent ~375 GPU-h.
+Status: **complete** (Sep 22). Main batch 47 elements (9 reverse timeouts resumed and finished), follow-ups §7
+all done: kernel bench + tile fix validated, mqmtar 20k-warmup (6), matched-LR aswstieltjes (6), entmax s2
+last.ckpt, reverse last.ckpt ladders (11). Spent ~380 GPU-h.
 
 ## 1. What was run
 
@@ -75,13 +74,26 @@ aswstieltjes_w20k per seed: 79/11/0, 6/0/skip, 56/1/0.
 
 ### Reverse
 
-Every reverse run has an identically-zero 8x monitor, so the checkpoint callback keeps the *first* checkpoint
-(step 11718) and per protocol (0913 §4.3) the fully trained last.ckpt must be laddered instead. The first
-eval pass, including the entmax numbers quoted in the Sep 21 draft of this report, used the step-11718
-checkpoint and is uninformative (entmax 96/80/43/0, Stieltjes rows 50-97 ID, 6-68 at 1.5x, <= 7 at 2x).
-last.ckpt ladders for all 11 rows: job 7479505 (pending). Val BLEU@4x at end of training, for the record:
-entmax 0.76 / 0.87; wstieltjes 0.53 / 0.66 / 0.68; aswstieltjes 0.48 / 0.59 / 0.55; q16 0.43 / 0.46 / 0.51;
-vs stieltjes q4 (0913) 0.42 best and ASEntmax 0.73.
+Every reverse run has an identically-zero 8x monitor, so the checkpoint callback keeps the *first*
+checkpoint (step 11718) and per protocol (0913 §4.3) the fully trained last.ckpt is laddered and runs are
+ranked by val BLEU@4x. (The first eval pass laddered the step-11718 checkpoint; those numbers are discarded.)
+
+| method | ID | 1.5x | 2x | 4x | 8x | selected (val BLEU@4x) | per-seed 2x / 4x |
+|---|---:|---:|---:|---:|---:|---|---|
+| softmax (0913) | 100 | 22 | 0 | skip | skip | s3 1.6e-3 (0.295) | |
+| stieltjes q=4 (0913) | 100 | 100 | 38 | 0 | skip | s1 3.2e-3 (0.422) | 38 / 0 / 0 (99/85 at 6.4e-3, unselected) |
+| **stieltjes_q16** | 100 | 94 | 8 | 0 | skip | s3 3.2e-3 (0.508) | 55 / 60 / 8 |
+| **wstieltjes** | 100 | 100 | 100 | 49 | 0 | s3 1.6e-3 (0.677) | 100 / 100 / 100 ; 0 / 0 / 49 |
+| **aswstieltjes** | 100 | 100 | 100 | 0 | skip | s2 4e-4 (0.592) | 86 / 100 / 100 ; 0 / 0 / 1 |
+| **entmax** | 100 | 100 | 99 | 61 | 0 | s2 4e-4 (0.869) | 100 / 99 ; 64 / 61 |
+| Entmax (paper) | 100 | 100 | 93.5 | 28.5 | 2.5 | | |
+| ASEntmax (0907) | 100 | 100 | 100 | 53 | 0 | s1 4e-4 (0.728) | 2 seeds: 53 / 5 at 4x |
+| ASEntmax (paper) | 100 | 100 | 99.8 | 96.4 | 56.7 | | |
+
+Reverse is where the window does something: 100 at 2x on all three wstieltjes seeds (dense q=4: 38 best
+of 14 runs), and one seed at 49 at 4x, in the range of ASEntmax's 53 / 5. The BLEU@4x fallback again picks
+the wrong seed within a row (q16 s3 8 at 2x over s1/s2 55/60) but here it picked the best wstieltjes seed.
+Our entmax control (64 / 61 at 4x) is above the paper's 28.5 and above our ASEntmax (53 / 5).
 
 ## 3. Findings
 
@@ -94,14 +106,17 @@ to nothing. A q=16 map is nearly hard-max from initialisation (toy: gap 1.2 for 
 attention never sees a soft mixture during training. Prediction "q16 >= q4 on the mqmtar tail" was wrong;
 the dispersion argument concerned eval length, but the failure is in training.
 
-### 3.2 Windowed q=4 behaves like dense q=4 on MQMTAR and like a weak entmax on sort/copy
+### 3.2 Windowed q=4: dense q=4 on MQMTAR, better than dense on reverse, worse than entmax on sort/copy
 
 MQMTAR: 91/48/6 vs dense q=4's 94/63/12 (within 1-2 SE per cell; the s1 seed's 72/17/0 and s3's 91/48/6
 bracket the dense seeds' 90/53/8 .. 94/63/12). Windowing gave exact zeros at no cost here, and it is the
-only sparse row in the table that trained on MQMTAR at all (entmax 1/2, ASEntmax 0/7, AS-windowed 0/3).
+only sparse row in the table that trained on MQMTAR at all (entmax 1/2, ASEntmax 0/10, AS-windowed 0/3
+at 10k warmup).
+Reverse: 100/100/100 at 2x across seeds where dense q=4's best of 14 runs is 38, and 49 at 4x on one
+seed (ASEntmax: 53 / 5 over two seeds; entmax 64 / 61). This is the clearest effect of the window.
 Sort 4x: 7 (seeds 0/2/7) vs entmax 53/16 and dense q=4's 0. Copy 64x: 25 vs entmax 50 and dense q=4's 52.
-So the sparse map inherits dense-q4's MQMTAR behaviour but not entmax's sort/copy behaviour. Prediction
-"windowed ~ entmax within noise" was wrong on sort (all 3 seeds < 10 vs entmax 16-53) and copy.
+So the window helps on the two tasks where the dense map's dispersion was the failure (reverse, and the
+MQMTAR tail it already handled) and does not buy entmax's sort/copy behaviour. §3.7 says why.
 
 ### 3.3 AS-windowed vs ASEntmax at matched LR: behind on sort, tied on copy, ahead on MQMTAR
 
@@ -169,6 +184,29 @@ is 1.1-5x faster than the old one at every shape. Fixed in c48c321 (bf16/fp16 ->
 (new python processes) already pick up 64x32, their training phases run with the tile they started with.
 If 7462977 reports a failure, re-ladder those runs.
 
+### 3.7 Why windowed is not entmax-like: the interior is entmax at alpha = 0.75, not 1.5
+
+The parity argument matched one property, the n-independent zero threshold. Inside the support the
+windowed map is unchanged Stieltjes-q, i.e. Tsallis entmax at alpha = 1 - 1/q = 0.75 for q = 4, on the
+other side of the alpha = 1 phase boundary from entmax-1.5. Two consequences (one-vs-rest toy, 32 tokens):
+
+| gap of 2nd token | p2 entmax-1.5 | p2 windowed q4 d2 |
+|---|---|---|
+| 0.25 | 0.41 | 0.28 |
+| 0.50 | 0.33 | 0.13 |
+| 1.00 | 0.17 | 0.002 (window closed: effective width d - (1+c)^{-1/q} ~ 1.0) |
+
+Support on random logits (n = 64, std 1): entmax-1.5 ~10 tokens, windowed d=2 ~6, d=4 ~39. So q=4, d=2 is a
+sharper and narrower map than entmax-1.5, and the credit assignment along the active set differs in sign:
+dp_j/dx_j ~ p^{2-alpha} = p^{0.5} for entmax-1.5 (small tokens get more gradient per unit mass) vs
+(p + c)^{1+1/q} ~ p^{1.25} for the windowed map (small tokens get less). Once a wrong token wins, the
+windowed map starves the token that should be recruited; entmax does the opposite. That is what sort (many
+near-equal candidates per query) exposes, and what associative recall (one winner) tolerates. The AS scale
+cannot fix it: scaling logits by s is window d/s at the same interior exponent. A soft interior on the
+sparse side of alpha = 1 is the mirror map (lam - x)_+^q, which is entmax at alpha = 1 + 1/q, i.e. already in
+the entmax family. The only region the two knobs (q, d) open up that entmax does not cover is a wide window
+with the sharp interior (d = 4-8), untested.
+
 ## 4. Predictions scored (plan §3)
 
 | prediction | outcome |
@@ -210,14 +248,16 @@ Total for the variants work ~375 GPU-h (~50 budget units); everything since Sep 
 | 7462345 x6 | mqmtar asentmax_w20k + aswstieltjes_w20k, 3 seeds, 2e-4 | done, §3.3/3.4 |
 | 7462346 x3 / 7462347 x3 | aswstieltjes at sort 2e-4 / copy 1e-3 | done, §3.3 |
 | 7462351 | mqmtar entmax s2 last.ckpt ladder | done: 20/3/0 |
-| 7479505 x11 | reverse last.ckpt ladders (9 Stieltjes rows + 2 entmax) | **pending** (eval-only, ~20 min each) |
+| 7479505 x11 | reverse last.ckpt ladders (9 Stieltjes rows + 2 entmax) | done, §2 Reverse |
 
 ## 8. What I would do next (not submitted)
 
-- Nothing more on q=16 or on plain windowed for sort/copy; the batch answers those.
-- If the reverse last.ckpt ladders put wstieltjes/aswstieltjes near ASEntmax's 53 at 4x, reverse becomes the
-  second task (with MQMTAR) where the windowed map is competitive; otherwise the summary is "windowed
-  Stieltjes = dense Stieltjes with exact zeros; competitive only on associative recall".
-- The MQMTAR plateau-escape rate is the only place a Stieltjes row beats the entmax family, and it is a
-  training-dynamics claim: 3-seed rates (Stieltjes 12/12, ASEntmax 0/10) are already significant, but a
-  1K-sample eval of the escaped checkpoints and a d sweep {1, 2, 4} at fixed LR would make it a result.
+- Nothing more on q=16.
+- Reverse is the second task (with MQMTAR) where the window is competitive: 100 at 2x on all seeds, 49 at
+  4x on one, vs ASEntmax 53 / 5. Worth 3 more seeds + the 6.4e-3 LR before quoting.
+- The interior-exponent analysis (§3.7) predicts a wide window (d = 4, 8) recovers some of sort/copy but not
+  entmax's numbers: sort 4x into the 20-40 range (65%). ~60 GPU-h for sort/copy x d in {4, 8} x 2 seeds.
+- The MQMTAR plateau-escape rate (Stieltjes family 12/12, ASEntmax 0/10) is a training-dynamics result that
+  needs 1K-sample evals of the escaped checkpoints and the d sweep above to be more than an observation.
+- Selection: val BLEU@4x saturates on sort and mis-ranks seeds on reverse; val exact-match at the next
+  length up would fix both (config change + re-selection, no training).
