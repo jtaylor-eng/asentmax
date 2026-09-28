@@ -30,12 +30,29 @@ Predictions (escape = train loss < 0.3 before 390k):
 - entmax_w20k escapes 1-2 of 3 (60%).
 - If zi escapes 0/3: the init is not the mechanism and the probe (below) decides what is.
 
-Mechanism probe (job 7576554): attention support size (keys/row with p > 0), max weight and the AS
-scaler quantiles on real MQMTAR batches for 9 existing last.ckpts: stuck ASEntmax (10k and 20k), stuck
-AS-windowed, stuck entmax, stuck q16 vs escaped windowed, dense q4, AS-windowed-w20k, entmax-s2.
-Prediction: stuck ASEntmax rows have support <= 2 keys with max weight > 0.8 in the non-ALiBi heads;
-escaped Stieltjes rows have support >= 5 (70%). Stuck plain entmax is the interesting one: if its support
-is also ~1 the mechanism is "sparse map on the plateau", if it is wider the mechanism is the scale.
+Mechanism probe (job 7576554, done in 6 min): attention support size (keys/row with p > 0), max weight
+and the AS scaler quantiles on 4 real MQMTAR batches for 9 existing last.ckpts.
+
+| checkpoint | outcome | support/row, layers 0-3 | scaler p50 / p95 / max (worst layer) |
+|---|---|---|---|
+| asentmax_w20k s1 | stuck | 5.4 / 2.2 / 7.9 / 13.7 | 1.00 / 84 / 344 |
+| asentmax 4e-4 s2 | stuck | 4.2 / 3.5 / 7.2 / 4.4 | 1.08 / 18 / 287 |
+| aswstieltjes 10k s1 | stuck | 5.2 / 7.1 / 3.9 / 5.2 | 1.02 / 7 / 77 |
+| aswstieltjes_w20k s1 | escaped | 4.6 / 6.2 / 3.0 / 2.3 | 1.03 / 2.5 / 76 |
+| wstieltjes s3 | escaped | 4.0 / 2.1 / 2.5 / 1.2 | - |
+| entmax s1 | stuck | 7.4 / 3.9 / 7.0 / 15.7 | - |
+| entmax s2 | escaped late | 7.6 / 5.5 / 8.1 / 7.6 | - |
+| stieltjes q4 s3 | escaped | 43 (dense) | - |
+| stieltjes q16 s1 | stuck | 43 (dense) | - |
+
+Scored: the prediction "stuck ASEntmax has support <= 2, escaped Stieltjes >= 5" is WRONG. Support does
+not separate stuck from escaped for any map (2-8 keys/row throughout; the escaped windowed run is the
+sparsest; dense q4 and q16 have identical full support with opposite outcomes). What does separate
+ASEntmax is the scaler: on the stuck ASEntmax checkpoints a subset of queries has scale p95 18-84, max
+287-344 (layer 1), i.e. some heads are hard-max and self-locked. The stuck and escaped AS-windowed runs
+share a similar tail (max 76-77), so end-of-training scaler explosion alone is not proof of causation;
+the asfix arms are the causal test. The trainability difference between the sparse maps (windowed q4
+3/3 at 4e-4 vs entmax 1/2 at 2e-4) is not explained by support size and remains open.
 
 ## 2. q sweep (jobs 7576492-5, 9 elements each after cancelling the aswstieltjes_q4 duplicate; 36 runs)
 
