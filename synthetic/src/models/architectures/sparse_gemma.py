@@ -198,6 +198,13 @@ class SparseGemma2Attention(Gemma2Attention):
                 attn_scale_proj_bias = getattr(config, "attn_scale_proj_bias", False)
                 self.attn_scale_beta_proj = nn.Linear(self.hidden_size, self.num_scaled_heads, bias=attn_scale_proj_bias)
                 self.attn_scale_gamma_proj = nn.Linear(self.hidden_size, self.num_scaled_heads, bias=attn_scale_proj_bias)
+                # attn_scale_zero_init (fork, Sep 23): start the scaler at delta + eps for every query
+                # (weights 0, gamma bias 0, beta bias softplus^-1(eps)), i.e. as plain entmax, and let
+                # the scale be learned from there. With the default HF init (N(0, 0.02)) the scaler
+                # at step 0 has median 1.7 and p95 5-11x at n = 64..4096, which makes ~5% of query rows
+                # near-hard-max from the first step (0 of 10 MQMTAR runs escaped the loss plateau).
+                # Applied in _zero_init_scale() after HF post_init() so it is not overwritten.
+                self.attn_scale_zero_init = float(getattr(config, "attn_scale_zero_init", 0.0) or 0.0)
             elif self.attn_scale_type == "nakanishi":
                 self.attn_scale_beta = nn.Parameter(torch.empty(1, self.num_scaled_heads, 1, 1).normal_(1.0, 0.01))
             else:
@@ -263,6 +270,18 @@ class SparseGemma2Attention(Gemma2Attention):
         else:
             raise NotImplementedError
 
+
+    def _zero_init_scale(self):
+        """Scaler = delta + eps for every query at init (eps = attn_scale_zero_init)."""
+        eps = self.attn_scale_zero_init
+        with torch.no_grad():
+            self.attn_scale_beta_proj.weight.zero_()
+            self.attn_scale_gamma_proj.weight.zero_()
+            if self.attn_scale_gamma_proj.bias is not None:
+                self.attn_scale_gamma_proj.bias.zero_()
+            if self.attn_scale_beta_proj.bias is not None:
+                # softplus^-1(eps) = log(exp(eps) - 1)
+                self.attn_scale_beta_proj.bias.fill_(math.log(math.expm1(eps)))
 
     def _apply_length_scaling(self, query_states, hidden_states, q_len, k_len):
         """Apply length-based adaptive attention temperature to non-ALiBi heads."""
@@ -589,3 +608,8 @@ class SparseGemma2ForCausalLM(Gemma2ForCausalLM):
 
         # Initialize weights and apply final processing
         self.post_init()
+        # Fork: zero-init of the adaptive attention scale (see SparseGemma2Attention.__init__).
+        # Must run after post_init(), which re-inits every nn.Linear with N(0, initializer_range).
+        for m in self.modules():
+            if isinstance(m, SparseGemma2Attention) and getattr(m, "attn_scale_zero_init", 0.0) > 0:
+                m._zero_init_scale()

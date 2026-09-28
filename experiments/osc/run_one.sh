@@ -45,8 +45,15 @@ fi
 
 # ---------------- method overrides (all NAPE) ----------------
 # Suffix _w20k = same method with 20k warmup (repo default) instead of the paper's 10k; separate run dir.
-WARMUP_OV=(); base=$method
-if [[ $method == *_w20k ]]; then WARMUP_OV=(model.scheduler.instance.num_warmup_steps=20000); base=${method%_w20k}; fi
+# Suffix _zi   = adaptive scale zero-initialised (attn_scale_zero_init=0.05: scaler = 1.05 for every query
+#                at step 0; see sparse_gemma.py). Suffixes compose: asentmax_zi_w20k.
+WARMUP_OV=(); ZI_OV=(); base=$method
+if [[ $base == *_w20k ]]; then WARMUP_OV=(model.scheduler.instance.num_warmup_steps=20000); base=${base%_w20k}; fi
+if [[ $base == *_zi ]]; then ZI_OV=(++model.net.attn_scale_zero_init=0.05); base=${base%_zi}; fi
+# Stieltjes q as a name suffix: stieltjes_q8, wstieltjes_q2, asstieltjes_q8, aswstieltjes_q2 ...
+# (stieltjes_q16 is the Sep 19 name and parses the same way). No suffix = q 4.
+SQ=4.0
+if [[ $base =~ ^(as)?(w)?stieltjes_q([0-9]+)$ ]]; then SQ=${BASH_REMATCH[3]}.0; base=${base%_q*}; fi
 case $base in
   softmax)   OV=(model.net.entmax_alpha=1.0 ++model.net.attn_implementation=flash_attention_2 ++model.net.use_fast_attn=True
                  ++model.net.attn_scale_type=null ++model.net.apply_rotary=False ++model.net.apply_nape=True) ;;
@@ -58,13 +65,12 @@ case $base in
   # dense eager path everywhere (O(N^2) fp32 scores: OOMs at ~4k prefill) — kept for comparison.
   # Variants (Sep 19): stieltjes_q16 (dense, q=16), wstieltjes (windowed q=4 d=2),
   # aswstieltjes (windowed + adaptive scale). Window d=2 -> c = 2^-4.
-  stieltjes|stieltjes_eager|stieltjes_q16|wstieltjes|aswstieltjes|asstieltjes|asstieltjes_eager)
-             SQ=4.0; SW=0; SCALE=(++model.net.attn_scale_type=null)
-             [[ $method == stieltjes_q16 ]] && SQ=16.0
-             [[ $method == *wstieltjes ]] && SW=2.0
-             [[ $method == as* ]] && SCALE=(++model.net.attn_scale_type=adapt-softplus-tanh ++model.net.attn_scale_proj_bias=True)
+  stieltjes|stieltjes_eager|wstieltjes|aswstieltjes|asstieltjes|asstieltjes_eager)
+             SW=0; SCALE=(++model.net.attn_scale_type=null)
+             [[ $base == *wstieltjes ]] && SW=2.0
+             [[ $base == as* ]] && SCALE=(++model.net.attn_scale_type=adapt-softplus-tanh ++model.net.attn_scale_proj_bias=True)
              OV=(model.net.entmax_alpha=1.0 ++model.net.attn_type=stieltjes ++model.net.stieltjes_q=$SQ ++model.net.stieltjes_window=$SW
-                 ++model.net.stieltjes_num_iter=30 ++model.net.stieltjes_impl=$([[ $method == *_eager ]] && echo eager || echo triton)
+                 ++model.net.stieltjes_num_iter=30 ++model.net.stieltjes_impl=$([[ $base == *_eager ]] && echo eager || echo triton)
                  ++model.net.attn_implementation=eager ++model.net.use_fast_attn=False
                  "${SCALE[@]}" ++model.net.apply_rotary=False ++model.net.apply_nape=True) ;;
   # entmax: plain 1.5-entmax without the adaptive scale (the paper's "Entmax" row; control for wstieltjes)
@@ -72,7 +78,7 @@ case $base in
                  ++model.net.attn_scale_type=null ++model.net.apply_rotary=False ++model.net.apply_nape=True) ;;
   *) log "unknown method $method"; exit 1 ;;
 esac
-OV+=("${WARMUP_OV[@]}")
+OV+=("${WARMUP_OV[@]}" "${ZI_OV[@]}")
 # NaN guard (LR sweep, Sep 13): stop training at the next validation check once the train loss is
 # non-finite instead of burning the full walltime on a diverged run. Patience is effectively
 # infinite so this never stops on "no improvement"; the best-by-monitor ckpt saved before the

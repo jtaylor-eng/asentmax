@@ -80,5 +80,36 @@ case $MODE in
     MAN="$RESULTS_ROOT/manifests/variants_followup_copy_${COMMIT}.txt"; : > "$MAN"
     for s in 1 2 3; do echo "copy aswstieltjes $s 1e-3"; done >> "$MAN"
     submit_array varf copy "$MAN" "${WALL[copy]}" ;;
-  *) echo "usage: $0 smoke|full|followup|manifest <file> [walltime]" >&2; exit 1 ;;
+  asfix)
+    # Sep 23: ASEntmax-on-MQMTAR fix. Zero-initialised adaptive scale (asentmax_zi: scaler = 1.05 for
+    # every query at step 0 instead of median 1.7 / p95 5-11x under the HF init), 3 seeds, at both
+    # warmups; plus the plain-entmax control at the same LR/warmup (currently 1/2 escaped).
+    MAN="$RESULTS_ROOT/manifests/asfix_mqmtar_${COMMIT}.txt"; : > "$MAN"
+    for s in 1 2 3; do echo "mqmtar asentmax_zi_w20k $s 2e-4"; echo "mqmtar asentmax_zi $s 2e-4"; echo "mqmtar entmax_w20k $s 2e-4"; done >> "$MAN"
+    submit_array asf mqmtar "$MAN" "${WALL[mqmtar]}" ;;
+  qsweep)
+    # Sep 23: q in {2, 8} for the four Stieltjes rows (q=4 exists for stieltjes/wstieltjes; run for the
+    # two AS rows), 1 seed, 1 LR per (task, row). Dense/windowed at the swept q=4 optima (0913); AS rows
+    # at the ASEntmax-matched values (sort 2e-4, reverse 4e-4, copy 1e-3, mqmtar 2e-4 + 20k warmup).
+    declare -A QLR=(
+      [sort/stieltjes]=3.2e-3    [reverse/stieltjes]=3.2e-3    [copy/stieltjes]=5e-4    [mqmtar/stieltjes]=4e-4
+      [sort/wstieltjes]=1.6e-3   [reverse/wstieltjes]=1.6e-3   [copy/wstieltjes]=5e-4   [mqmtar/wstieltjes]=4e-4
+      [sort/asstieltjes]=2e-4    [reverse/asstieltjes]=4e-4    [copy/asstieltjes]=1e-3  [mqmtar/asstieltjes]=2e-4
+      [sort/aswstieltjes]=2e-4   [reverse/aswstieltjes]=4e-4   [copy/aswstieltjes]=1e-3 [mqmtar/aswstieltjes]=2e-4
+    )
+    for task in "${TASKS[@]}"; do
+      MAN="$RESULTS_ROOT/manifests/qsweep_${task}_${COMMIT}.txt"; : > "$MAN"
+      for row in stieltjes wstieltjes asstieltjes aswstieltjes; do
+        lr=${QLR[$task/$row]}
+        qs="2 8"; [[ $row == as* ]] && qs="2 4 8"
+        for q in $qs; do
+          m="${row}_q${q}"
+          # AS rows on mqmtar: 20k warmup (10k never escaped the plateau for any AS-scaled map)
+          [[ $task == mqmtar && $row == as* ]] && m="${m}_w20k"
+          echo "$task $m 1 $lr" >> "$MAN"
+        done
+      done
+      submit_array qsw "$task" "$MAN" "${WALL[$task]}"
+    done ;;
+  *) echo "usage: $0 smoke|full|followup|asfix|qsweep|manifest <file> [walltime]" >&2; exit 1 ;;
 esac

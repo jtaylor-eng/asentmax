@@ -33,7 +33,7 @@ def eager(q, k, v, slopes, Q, d, causal=True):
 
 def rel(a, b): return ((a.float() - b.float()).norm() / b.float().norm().clamp(min=1e-30)).item()
 
-CASES = [(4.0, None), (16.0, None), (4.0, 2.0), (4.0, 1.0), (16.0, 1.5)]
+CASES = [(4.0, None), (16.0, None), (4.0, 2.0), (4.0, 1.0), (16.0, 1.5), (2.0, None), (8.0, None), (2.0, 2.0), (8.0, 2.0)]
 SHAPES = [(2, 8, 64, 32), (2, 16, 64, 16), (1, 8, 200, 32), (1, 4, 1024, 64), (3, 16, 96, 16)]
 for dtype in [torch.float32, torch.bfloat16]:
     for Q, d in CASES:
