@@ -17,6 +17,7 @@ confidence estimate *before* OSC compute is spent; results reported as tables wi
 
 | file | status |
 |---|---|
+| `context/asfix_qsweep_0923_plan.md` | **CURRENT plan** — ASEntmax MQMTAR fix (zero-init adaptive scale) + q sweep {2,4,8} x 4 Stieltjes rows, 1 seed; predictions; jobs 7576491-5, probe 7576554 |
 | `context/reproduction_0920.md` | **CURRENT results** — Stieltjes variants batch (q=16, windowed, AS-windowed, entmax control): headline tables, findings §3, predictions scored §4, pending §7 |
 | `context/variants_0919_plan.md` | plan for the above — Stieltjes variants batch (q=16, windowed d=2, AS-windowed, entmax control, asentmax mqmtar fix): guessed LRs, predictions, job IDs |
 | `context/reproduction_0913.md` | LR sweep (still the reference for the softmax/stieltjes-q4 rows) (softmax + stieltjes, bracketed grids, 3 seeds at top-2 LRs), findings §4, selection delta §6, pending §7 |
@@ -50,7 +51,7 @@ experiments/                  fork-added, non-library
   osc/                        the OSC pipeline: env.sh (all paths) · setup_env.sh (one-time venv) · submit.sh -> array_worker.sbatch -> run_one.sh ·
                               datagen.sbatch · progress.sh · aggregate.py / reselect.py / dump_runs.py (result tables; per-run selection; JSON dump) · submit_impl_cmp.sh ·
                               submit_lrsweep.sh (LR sweep: stage1|stage2|reladder|manifest) · gen_tiebreak_val.sh (long val splits for tie-breaking) ·
-                              submit_variants.sh (Sep 19 variants batch: smoke|full|manifest; smoke writes to $RESULTS_ROOT_smoke)
+                              submit_variants.sh (smoke|full|followup|asfix|qsweep|manifest; smoke writes to $RESULTS_ROOT_smoke)
   osc/oneoff/                 single-use smoke / diagnostic sbatch scripts, kept for reference
   tests/smoke_stieltjes_local.sh   ~1 min/method local end-to-end (train 60 steps + eval) on the sort data
   tests/learn1500_local.sh         ~1.5 min/method: 1500 steps, prints loss trajectory + val acc (does the row learn?)
@@ -84,7 +85,8 @@ softmax:   model.net.entmax_alpha=1.0 ++model.net.attn_implementation=flash_atte
 entmax:    model.net.entmax_alpha=1.5 ++model.net.attn_implementation=eager ++model.net.use_fast_attn=True ++model.net.attn_scale_type=null
 asentmax:  model.net.entmax_alpha=1.5 ++model.net.attn_implementation=eager ++model.net.use_fast_attn=True ++model.net.attn_scale_type=adapt-softplus-tanh ++model.net.attn_scale_proj_bias=True
 stieltjes: model.net.entmax_alpha=1.0 ++model.net.attn_type=stieltjes ++model.net.stieltjes_q=4.0 ++model.net.stieltjes_window=0 ++model.net.stieltjes_num_iter=30 ++model.net.stieltjes_impl=triton ++model.net.attn_implementation=eager ++model.net.use_fast_attn=False ++model.net.attn_scale_type=null
-  stieltjes_q16: as stieltjes with stieltjes_q=16.0      wstieltjes: stieltjes_window=2.0      aswstieltjes: wstieltjes + the asentmax scale flags
+  name suffixes compose: <row>[_q<N>][_zi][_w20k]  (row in stieltjes|wstieltjes|asstieltjes|aswstieltjes|asentmax|entmax)
+  _q<N>: stieltjes_q=N (default 4)   w: stieltjes_window=2.0   as: the asentmax scale flags   _zi: attn_scale_zero_init=0.05   _w20k: 20k warmup
 (not run yet: topk  ++model.net.attn_type=topk ++model.net.topk_size=32 alpha=1.0;  ssmax alpha=1.0 attn_scale_type=nakanishi)
 ```
 
