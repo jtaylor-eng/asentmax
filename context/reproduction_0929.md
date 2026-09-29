@@ -1,6 +1,7 @@
 # ASEntmax MQMTAR fix + q sweep — results (2026-09-29)
 
-Batch planned in `asfix_qsweep_0923_plan.md` (predictions there, scored in §4; follow-up predictions §7). Protocol as in
+Batch planned in `asfix_qsweep_0923_plan.md` (predictions there, scored in §4; follow-up predictions and
+scores §7, follow-up results §8). Protocol as in
 `reproduction_0913.md`; 100 test samples/length (±4 pt SE at p = 0.8). All 45 runs completed, no
 failures; ~255 GPU-h. Reverse rows laddered from last.ckpt (job 7583832; the best-by-monitor pass
 picked the step-11718 ckpt again, now fixed in `run_one.sh`).
@@ -25,9 +26,10 @@ lr 2e-4 throughout. "escape" = first step with train loss < 0.3 (plateau is 0.52
 Selected by val acc@8x: s1 (the only one with a full ladder). Best ASEntmax MQMTAR row we have:
 100/100/100/100/96/77/38 vs paper 99.6/99.0/95.3 at 64x/256x/1024x. Escape rate for ASEntmax at 20k
 warmup went from 0/3 (HF init, job 7462345) to 3/3 (zero init) at the same LR, seeds and schedule; at
-10k warmup it is still 0/3. So: init is causal, but only in combination with the longer warmup, and
-the two seeds that escaped late (147k, 193k) had too little schedule left to consolidate (11 and 0 at
-64x). This is the same "escape step decides the ladder" pattern as every other method on MQMTAR.
+10k warmup it is still 0/3, and at 4e-4 with 20k warmup also 0/3 (§8.3). So: init is causal, but only
+in the (20k warmup, 2e-4) corner, and the two seeds that escaped late (147k, 193k) had too little
+schedule left to consolidate (11 and 0 at 64x). This is the same "escape step decides the ladder"
+pattern as every other method on MQMTAR.
 
 Plain entmax at the same config: 2/3 escaped (171k, 206k), one full ladder (91/58/7). So the family
 trains on MQMTAR with 20k warmup; the HF-init scale was what took ASEntmax from ~2/3 to 0/10.
@@ -95,14 +97,10 @@ dispersion was the failure. With q16 already dead, the sharp-interior direction 
 3.2 q = 2 splits by whether the map is windowed. Dense q2 (interior alpha = 0.5, dispersion ~ n^{1/2}) is
 the worst dense row on every task (sort 0 at 2x, copy 0 at 4x, mqmtar 1 at 16x): the dispersion argument
 from the theory note is confirmed at the wide end. Windowed q2 is a different story: the window removes
-the dispersion and leaves the widest interior, and it is the best or near-best Stieltjes row on three
-tasks:
-  aswstieltjes_q2: sort 4x 62 (vs ASEntmax 81/69, entmax 53; any q4 seed <= 37), mqmtar 96/88/45 at
-  64x/256x/1024x (the best mqmtar ladder in the whole project; ASEntmax_zi 96/77/38, paper 99.6/99.0/95.3),
-  copy 49/4 at 32x/64x (below q4's 60/15, within 1-seed noise).
-  wstieltjes_q2: copy 60/10 vs q4's 69/25, mqmtar 77/28 vs q4's 91/48.
-One seed each. The sort and mqmtar cells are 2-3 SE above anything from the q4 rows, so they are worth
-seeds; the copy cells are not distinguishable from q4.
+the dispersion and leaves the widest interior. With seeds (§8): the sort 4x = 62 was a one-seed outlier
+(3-seed mean 21, same as q4); the mqmtar result is real (3/3 escape, 96/88/45 best, 54 ± 29 mean at
+256x) and d = 4 improves it further (100/91/49 best of 2). wstieltjes_q2 without the scale: copy 60/10
+vs q4's 69/25, mqmtar 77/28 vs q4's 91/48, i.e. within 1-seed noise of q4.
 
 3.3 The AS scale on the dense map (asstieltjes, new row) does nothing useful: sort 31-49 ID at q2/q4
 (the scale plus a dense heavy tail overshoots), copy 14 at 64x vs dense 52, mqmtar 93/36/0 at q4 vs
@@ -111,8 +109,8 @@ dense 94/63/12. Only q8 trains on sort and it generalises to 2. Drop it.
 3.4 Reading across the table: the two knobs do separate. q controls the interior (q8 too sharp to
 train on copy, q2 too flat to hold a tail when dense); d controls dispersion (the window is what
 makes q2 usable). The one region entmax does not cover, a wide interior with a hard cutoff, is where
-the single best cells came from. The next test is that region, with seeds: aswstieltjes_q2 on sort and
-mqmtar x 3 seeds, plus d in {1, 4} at q2 to see whether the window width matters as much as q did.
+the best MQMTAR cells came from, and it holds up under seeds and widens with d (§8). It does not
+transfer to sort/copy/reverse.
 
 ## 4. Predictions scored (plan §1-2)
 
@@ -136,7 +134,8 @@ not separate it from the windowed case, where the window removes exactly the fai
 
 - mqmtar asentmax_zi_w20k: val acc@8x picks s1 (only full ladder); no tie.
 - q-sweep rows are single runs; nothing to select. Reverse rows are ranked by val BLEU@4x per protocol.
-- The sort 4x = 62 and mqmtar 88/45 cells are one seed at one LR and must not be quoted as row values.
+- The sort 4x = 62 (aswstieltjes_q2 s1) is a seed outlier (§8.1) and must not be quoted as a row value;
+  the mqmtar cells for aswstieltjes_q2 / _d4 are 3- and 2-seed and can be quoted with their spread.
 
 ## 6. Jobs
 
@@ -146,16 +145,65 @@ not separate it from the windowed case, where the window removes exactly the fai
 | 7576492-5 x9 | q sweep, 4 tasks | done |
 | 7576554 | attention-support probe | done (plan file) |
 | 7583832 x9 | reverse last.ckpt ladders for the q-sweep rows | done (§2 Reverse) |
-| 7583955 x6 | sort: aswstieltjes_q2 seeds 2-3; aswstieltjes_q2_d{1,4} seeds 1-2 | pending |
-| 7583956 x9 | mqmtar: aswstieltjes_q2_w20k seeds 2-3; _d{1,4}_w20k seeds 1-2; asentmax_zi_w20k at 4e-4 x3 | pending |
+| 7583955 x6 | sort: aswstieltjes_q2 seeds 2-3; aswstieltjes_q2_d{1,4} seeds 1-2 | done (§8) |
+| 7583956 x9 | mqmtar: aswstieltjes_q2_w20k seeds 2-3; _d{1,4}_w20k seeds 1-2; asentmax_zi_w20k at 4e-4 x3 | done (§8) |
 
-## 7. Follow-up predictions (Sep 29, before 7583955/6 landed)
+Total this report ~380 GPU-h (~50 budget units). Raw dump: `context/runs_0920.json` (244 runs).
 
-- aswstieltjes_q2 sort 4x, 3-seed mean: 30-55 (65%); at least one seed < 20 (60%). Beats entmax's
-  best single seed (53) on the mean: 25%.
-- aswstieltjes_q2_w20k mqmtar, 3 seeds: 3/3 escape (65%); 3-seed mean at 256x 50-80 (55%); the seed-1
-  88/45 is the top seed, not the median (70%).
-- d at q2 on sort 4x: d=4 >= d=2 > d=1 (55%); d=1 is the sharpest window and lands at 0-20.
-- d at q2 on mqmtar: d=1 escapes but with the worst tail (256x < 30, 60%); d=4 ~ d=2 (55%).
-- asentmax_zi_w20k at 4e-4: escapes 2-3/3 (60%) and earlier than at 2e-4 (median escape < 120k, 55%);
-  one seed NaNs or collapses (35%). If escape is early, 256x >= 85 (55%).
+## 7. Follow-up predictions (Sep 29, before 7583955/6 landed) and scores
+
+| prediction | outcome |
+|---|---|
+| aswstieltjes_q2 sort 4x 3-seed mean 30-55 (65%); at least one seed < 20 (60%); beats entmax's 53 on the mean (25%) | mean 21 (62/1/0): wrong / right / right |
+| aswstieltjes_q2_w20k mqmtar 3/3 escape (65%); 3-seed mean at 256x 50-80 (55%); seed-1 88/45 is the top seed (70%) | right (52k, 141k, 141k) / right (54) / right |
+| d at q2 on sort 4x: d=4 >= d=2 > d=1 (55%); d=1 at 0-20 | all three d at 0-1 on seeds 2+; not separable |
+| d at q2 on mqmtar: d=1 worst tail, 256x < 30 (60%); d=4 ~ d=2 (55%) | right (1/2 escaped, late, 0 at 16x) / wrong: d=4 > d=2 (91/49 vs 88/45 best seeds; 62 vs 54 mean at 256x) |
+| asentmax_zi_w20k at 4e-4: escapes 2-3/3 (60%), earlier (55%); one seed NaNs (35%); 256x >= 85 if early (55%) | wrong: 0/3 escaped, no NaN; loss flat at 0.52 |
+
+5 of 9 right. Misses: the sort 62 was a seed outlier (I gave that 60% and still centred the mean too
+high); the ASEntmax fix does not tolerate a hotter LR; and d=4 is better than d=2 on mqmtar, not equal.
+
+## 8. Follow-up results (jobs 7583955/6)
+
+### 8.1 aswstieltjes_q2 with seeds
+
+| | sort ID / 2x / 4x / 8x | mqmtar 16x / 64x / 256x / 1024x | escape |
+|---|---|---|---|
+| s1 | 100/100/62/0 | 100/96/88/45 | 141k |
+| s2 | 100/92/1/0 | 100/95/57/11 | 141k |
+| s3 | 100/92/0/skip | 94/77/16/1 | 52k |
+| mean ± sd | 4x: 21 ± 29 | 256x: 54 ± 29; 1024x: 19 ± 19 | |
+| ref | entmax 53/16 (2 seeds), ASEntmax 81/69, asw_q4 37/4/11 | ASEntmax_zi 77/38 (best of 3); dense q4 63/12 (best of 3) | |
+
+Sort: the 62 does not survive seeds; 3-seed mean 21 vs q4's 17. Windowed q2 is not a sort method.
+MQMTAR: all three escape, the row is real (mean 54 at 256x vs dense q4's best-of-3 63 and ASEntmax_zi's
+best-of-3 77; both of those rows have a 0-16 seed too). Seed spread is the same ±30 as every other
+mqmtar row, driven by escape step: the 52k escape got the *worst* tail here, so early escape is not
+sufficient either.
+
+### 8.2 Window width d at q=2 (2 seeds each, 2e-4; mqmtar with 20k warmup)
+
+| d | c = d^-2 | sort 2x / 4x | mqmtar 64x / 256x / 1024x | escape |
+|---|---|---|---|---|
+| 1 | 1 | 53/0, 67/0 | s1 never; s2 33 ID (esc 226k) | 0.5 / 2 |
+| 2 | 1/4 | 100/62, 92/1, 92/0 | 96/88/45, 95/57/11, 77/16/1 | 3 / 3 |
+| 4 | 1/16 | 65/0, 85/0 | 77/32/0, **100/91/49** | 2 / 2 (48k, 196k) |
+| ref | | | ASEntmax paper 99.6/99.0/95.3; ASEntmax_zi best 96/77/38 | |
+
+d=1 is the sharpest window (effective width d - (1+c)^{-1/q} = 1 - 1.41 < 0: the window closes before
+the pole, only the top token survives) and barely trains. d=4 on mqmtar: s2 is 100/91/49 at 64x/256x/
+1024x, the best mqmtar ladder in the project and within 8 pts of the paper's ASEntmax at 256x; s1
+escaped at 48k and still only got 32 at 256x. On sort all d are 0-1 at 4x on the non-outlier seeds.
+
+### 8.3 asentmax_zi_w20k at 4e-4: 0 of 3 escape (loss 0.52-0.53 flat for 390k). The fix works at 2e-4
+only. With 10k warmup also 0/3, the working region is exactly (zero-init, 20k warmup, 2e-4) and nothing
+we tried on either side of it. Best ASEntmax MQMTAR remains 96/77/38.
+
+### 8.4 Where this leaves the map
+
+Windowed Stieltjes at (q=2, d in {2, 4}) with the AS scale is the only Stieltjes configuration that
+competes with ASEntmax on anything, and it does so on MQMTAR: 5 of 5 seeds escape at 2e-4 (ASEntmax 3/3
+only after the init fix and only at that one LR/warmup), best ladder 100/91/49, 5-seed mean at 256x
+57 ± 30. On sort/copy/reverse it is a weaker map than entmax-1.5, for the interior-exponent reason in
+0920 §3.7, and no q or d changes that. The 1024x column is still 0-49 for every row we have, vs the
+paper's 95.3.

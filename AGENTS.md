@@ -17,7 +17,7 @@ confidence estimate *before* OSC compute is spent; results reported as tables wi
 
 | file | status |
 |---|---|
-| `context/reproduction_0929.md` | **CURRENT results** — ASEntmax MQMTAR fix (zero-init scale + 20k warmup: 3/3 escape, 96/77/38) + q sweep {2,4,8}: q8 dead except reverse, windowed q2 best cells (asw_q2 sort 4x 62, mqmtar 88/45, 1 seed); §7 predictions for the seeds/d/4e-4 follow-up (7583955/6) |
+| `context/reproduction_0929.md` | **CURRENT results** — ASEntmax MQMTAR fix (zero-init scale, works only at 20k warmup + 2e-4: 3/3 escape, best 96/77/38) + q sweep {2,4,8} (q8 dead except reverse; asstieltjes useless) + seeds/d follow-up §8: aswstieltjes q2 on mqmtar 5/5 escape, d=4 best 100/91/49; sort 62 was a seed outlier |
 | `context/asfix_qsweep_0923_plan.md` | plan for the above — ASEntmax MQMTAR fix (zero-init adaptive scale) + q sweep {2,4,8} x 4 Stieltjes rows, 1 seed; predictions; jobs 7576491-5, probe 7576554 |
 | `context/reproduction_0920.md` | results — Stieltjes variants batch (q=16, windowed, AS-windowed, entmax control): headline tables, findings §3, predictions scored §4, pending §7 |
 | `context/variants_0919_plan.md` | plan for the above — Stieltjes variants batch (q=16, windowed d=2, AS-windowed, entmax control, asentmax mqmtar fix): guessed LRs, predictions, job IDs |
