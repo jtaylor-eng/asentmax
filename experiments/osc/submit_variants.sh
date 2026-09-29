@@ -111,5 +111,19 @@ case $MODE in
       done
       submit_array qsw "$task" "$MAN" "${WALL[$task]}"
     done ;;
-  *) echo "usage: $0 smoke|full|followup|asfix|qsweep|manifest <file> [walltime]" >&2; exit 1 ;;
+  q2follow)
+    # Sep 29 (reproduction_0929.md §3.2/§1): the single-seed q2 windowed cells and the ASEntmax fix, with seeds.
+    #  aswstieltjes_q2     sort + mqmtar, seeds 2 3 (seed 1 exists)           -> is sort 4x 62 / mqmtar 88/45 real
+    #  aswstieltjes_q2_d{1,4}  sort + mqmtar, seeds 1 2                       -> does window width matter at q2
+    #  asentmax_zi_w20k at 4e-4, mqmtar, seeds 1 2 3                          -> hotter LR = earlier escape?
+    MAN="$RESULTS_ROOT/manifests/q2follow_sort_${COMMIT}.txt"; : > "$MAN"
+    for s in 2 3; do echo "sort aswstieltjes_q2 $s 2e-4"; done >> "$MAN"
+    for d in 1 4; do for s in 1 2; do echo "sort aswstieltjes_q2_d$d $s 2e-4"; done; done >> "$MAN"
+    submit_array q2f sort "$MAN" "${WALL[sort]}"
+    MAN="$RESULTS_ROOT/manifests/q2follow_mqmtar_${COMMIT}.txt"; : > "$MAN"
+    for s in 2 3; do echo "mqmtar aswstieltjes_q2_w20k $s 2e-4"; done >> "$MAN"
+    for d in 1 4; do for s in 1 2; do echo "mqmtar aswstieltjes_q2_d${d}_w20k $s 2e-4"; done; done >> "$MAN"
+    for s in 1 2 3; do echo "mqmtar asentmax_zi_w20k $s 4e-4"; done >> "$MAN"
+    submit_array q2f mqmtar "$MAN" "${WALL[mqmtar]}" ;;
+  *) echo "usage: $0 smoke|full|followup|asfix|qsweep|q2follow|manifest <file> [walltime]" >&2; exit 1 ;;
 esac

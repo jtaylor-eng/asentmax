@@ -50,10 +50,14 @@ fi
 WARMUP_OV=(); ZI_OV=(); base=$method
 if [[ $base == *_w20k ]]; then WARMUP_OV=(model.scheduler.instance.num_warmup_steps=20000); base=${base%_w20k}; fi
 if [[ $base == *_zi ]]; then ZI_OV=(++model.net.attn_scale_zero_init=0.05); base=${base%_zi}; fi
-# Stieltjes q as a name suffix: stieltjes_q8, wstieltjes_q2, asstieltjes_q8, aswstieltjes_q2 ...
-# (stieltjes_q16 is the Sep 19 name and parses the same way). No suffix = q 4.
-SQ=4.0
-if [[ $base =~ ^(as)?(w)?stieltjes_q([0-9]+)$ ]]; then SQ=${BASH_REMATCH[3]}.0; base=${base%_q*}; fi
+# Stieltjes q and window d as name suffixes: stieltjes_q8, wstieltjes_q2, aswstieltjes_q2_d4 ...
+# (stieltjes_q16 is the Sep 19 name and parses the same way). No suffix = q 4; windowed rows default d 2.
+SQ=4.0; SW_NAME=""
+if [[ $base =~ ^(as)?(w)?stieltjes(_q([0-9]+))?(_d([0-9.]+))?$ ]]; then
+  [ -n "${BASH_REMATCH[4]}" ] && SQ=${BASH_REMATCH[4]}.0
+  [ -n "${BASH_REMATCH[6]}" ] && SW_NAME=${BASH_REMATCH[6]}
+  base=${base%%_q*}; base=${base%%_d*}
+fi
 case $base in
   softmax)   OV=(model.net.entmax_alpha=1.0 ++model.net.attn_implementation=flash_attention_2 ++model.net.use_fast_attn=True
                  ++model.net.attn_scale_type=null ++model.net.apply_rotary=False ++model.net.apply_nape=True) ;;
@@ -67,7 +71,7 @@ case $base in
   # aswstieltjes (windowed + adaptive scale). Window d=2 -> c = 2^-4.
   stieltjes|stieltjes_eager|wstieltjes|aswstieltjes|asstieltjes|asstieltjes_eager)
              SW=0; SCALE=(++model.net.attn_scale_type=null)
-             [[ $base == *wstieltjes ]] && SW=2.0
+             [[ $base == *wstieltjes ]] && SW=${SW_NAME:-2.0}
              [[ $base == as* ]] && SCALE=(++model.net.attn_scale_type=adapt-softplus-tanh ++model.net.attn_scale_proj_bias=True)
              OV=(model.net.entmax_alpha=1.0 ++model.net.attn_type=stieltjes ++model.net.stieltjes_q=$SQ ++model.net.stieltjes_window=$SW
                  ++model.net.stieltjes_num_iter=30 ++model.net.stieltjes_impl=$([[ $base == *_eager ]] && echo eager || echo triton)
