@@ -105,6 +105,10 @@ if [ "${TIEBREAK:-}" = 1 ]; then
 fi
 
 CKPT_DIR="$RUN/checkpoints"
+# Reverse: the exact-match@8x monitor is identically 0 for every method, so the "best" ckpt is always the
+# first one saved (step 11718). Protocol (0913 §4.3): ladder last.ckpt, rank runs by val BLEU@4x. Make
+# that the default for reverse so no pass wastes a ladder on the step-11718 ckpt (Sep 21 and Sep 28 did).
+if [ "$task" = reverse ] && [ -z "${CKPT_OVERRIDE:-}" ] && [ "${TIEBREAK:-}" != 1 ]; then CKPT_OVERRIDE=last; fi
 # ---------------- 1) train ----------------
 if [ -f "$RUN/TRAIN_DONE" ]; then
   log "training already done"
