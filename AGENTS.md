@@ -55,7 +55,7 @@ experiments/                  fork-added, non-library
                               submit_variants.sh (smoke|full|followup|asfix|qsweep|manifest; smoke writes to $RESULTS_ROOT_smoke)
   osc/oneoff/                 single-use smoke / diagnostic sbatch scripts, kept for reference
   attn_maps/                  attention-map extraction: select_runs.py (best run per family x task -> manifest.tsv) ·
-                              extract.py (patched chunked-eager forward -> per-(task,run,stem) .npz) · extract.sbatch
+                              extract.py (patched chunked-eager forward -> per-(task,run,stem) .npz) · extract.sbatch · plot.py (local; synthetic/.venv has matplotlib)
   tests/smoke_stieltjes_local.sh   ~1 min/method local end-to-end (train 60 steps + eval) on the sort data
   tests/learn1500_local.sh         ~1.5 min/method: 1500 steps, prints loss trajectory + val acc (does the row learn?)
   hf/gemma-2-2b/config.json   vendored HF config so no network/token is needed (model weights are random-init)
