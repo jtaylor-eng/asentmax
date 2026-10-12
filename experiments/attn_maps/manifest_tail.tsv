@@ -1,0 +1,13 @@
+task	family	method	seed	lr	ckpt_kind	primary	sel_val	tiebreak	pick
+copy	softmax	softmax	1	1e-3	best	1	1.000	{"val16x":"98.0","val32x":"88.0"}	val
+copy	entmax	entmax	2	5e-4	best	1	1.000	{}	val
+copy	asentmax	asentmax	2	5e-4	best	1	1.000	{}	best_ladder
+copy	stieltjes	stieltjes	1	5e-4	best	1	1.000	{"val16x":"97.0","val32x":"85.0"}	val
+copy	wstieltjes	wstieltjes	1	5e-4	best	1	0.990	{}	best_ladder
+copy	aswstieltjes	aswstieltjes	3	1e-3	best	1	1.000	{}	val
+mqmtar	softmax	softmax	3	2e-4	best	1	1.000	{"val16x":"97.0","val64x":"94.0"}	val
+mqmtar	entmax	entmax_w20k	1	2e-4	best	1	1.000	{}	val
+mqmtar	asentmax	asentmax_zi_w20k	1	2e-4	best	1	1.000	{}	val
+mqmtar	stieltjes	stieltjes	3	4e-4	best	1	1.000	{"val16x":"98.0","val64x":"91.0"}	val
+mqmtar	wstieltjes	wstieltjes	3	4e-4	best	1	1.000	{}	best_ladder
+mqmtar	aswstieltjes	aswstieltjes_q2_d4_w20k	2	2e-4	best	1	1.000	{}	best_ladder

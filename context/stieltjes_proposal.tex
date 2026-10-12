@@ -44,6 +44,68 @@ There are two kinds of regularizers under consideration and the corresponding ``
 \end{enumerate}
 where the $\lambda_q$ is such that $\lambda_q > x_i$ for all $x_i$ and which makes the sum of the entries in the argmax sums to 1. It can be seen that this is unique and one can always find the $\lambda_q$ via binary search/1D line search.
 
+\section{Why a windowed (sparse) variant}
+
+\paragraph{Dense Stieltjes disperses.} Regularizer 2 is the Tsallis/$\alpha$-entmax regularizer at
+$\alpha = 1 - 1/q$ (up to the constant $q$, a temperature); regularizer 1 is its $q \to 1$ limit. Both
+are on the dense side of $\alpha = 1$: since $R'(y) \to \infty$ as $y \to 0$, every coordinate receives
+positive mass and the map cannot escape dispersion. Concretely, with bounded logits $|x_i| \le B$,
+$\sum_i (\lambda - x_i)^{-q} = 1$ forces $\lambda \ge n^{1/q} - B$, hence
+\begin{align*}
+\frac{p_{\max}}{p_{\min}} \le \Big(\frac{\lambda + B}{\lambda - B}\Big)^{q} \to 1, \qquad
+p_{\max} \le \frac{1 + o(1)}{n}.
+\end{align*}
+Softmax keeps $p_{\max}/p_{\min} \le e^{2B}$ fixed, so in the limit the polynomial tail disperses
+\emph{faster} than the exponential one. In the one-vs-rest toy ($x = (g, 0, \dots, 0)$), the gap $g$
+required for the top token to keep half the mass is $\log(2n)$ for softmax and $(2n)^{1/q}$ for
+Stieltjes-$q$: sharper than softmax below $n \approx 4\mathrm{k}$ for $q = 4$, worse above. The
+heavier tail is therefore a moderate-context advantage, not a length-generalization mechanism.
+
+\paragraph{Windowing makes it sparse.} Length generalization needs a threshold below which mass is
+\emph{exactly} zero, so that the $n - s$ irrelevant tokens contribute nothing regardless of $n$.
+Truncate the kernel at distance $d$ from the viewpoint, continuously:
+\begin{align*}
+p_i = \Big[ (\lambda - x_i)^{-q} - d^{-q} \Big]_+ , \qquad \lambda \text{ s.t. } \textstyle\sum_i p_i = 1 .
+\end{align*}
+Writing $c = d^{-q}$, the stationarity condition $x_i + R'(y_i) = \lambda$ with $y_i + c = (\lambda -
+x_i)^{-q}$ gives $R'(y) = (y + c)^{-1/q}$, i.e.\ the regularizer is regularizer 2 shifted off the
+boundary,
+\begin{align*}
+R(y) = \frac{q}{q-1} \sum_i (y_i + c)^{1 - 1/q}.
+\end{align*}
+Now $R'(0) = d < \infty$, so tokens more than (roughly) $d$ below the top are set to zero. In the toy
+above the top token holds half the mass iff $g > d - (1+c)^{-1/q}$, independent of $n$; numerically
+the required gap is flat from $n = 16$ to $n = 2^{20}$ (e.g.\ $0.85$ for $q = 4, d = 2$), matching
+1.5-entmax's $O(1)$ behaviour rather than softmax's $\log n$. As $d \to \infty$ the dense map is
+recovered, so this is a strict generalization. The same 1-D root solve computes $\lambda$; the only
+change is a clip.
+
+\paragraph{What it offers over $\alpha$-entmax.} Windowed Stieltjes is a smooth top-$k$ whose support
+is set by a logit gap $d$ rather than a count, which is the property fixed Top-$K$ lacks. Relative
+to $\alpha$-entmax ($\alpha > 1$) it shares the $n$-independent threshold and differs in the interior
+of the support, which has a power-law profile with its own shape parameter $q$, so support width and
+weight profile are set by two knobs ($d$, $q$) rather than one ($\alpha$).
+
+A note on the on/off boundary, since it is tempting to read something into it. $R''(y) =
+-\tfrac{1}{q}(y+c)^{-1-1/q}$ is bounded at $y = 0$, and since $\partial p_i/\partial x_i = -1/R''(p_i)$
+along the active set, a token entering the support does so with a \emph{finite, nonzero} slope
+$q\,d^{-(q+1)}$: the map is $C^0$ but not $C^1$ there (a kink, as for sparsemax). $\alpha$-entmax with
+$1 < \alpha < 2$ has $R''(y) \to \infty$ as $y \to 0$, so its entry slope is zero and it is the
+$C^1$ one (for $\alpha = 1.5$, $p_i \propto (x_i - \tau)_+^2$ near the boundary). So boundary smoothness is
+not an argument for windowed Stieltjes over entmax. The training-robustness observation from our
+sweeps (ASEntmax stalled or diverged on MQMTAR/Sort at several learning rates while dense Stieltjes
+trained) is more simply explained by density: a dense map gives every token gradient at every step,
+which windowing removes. Whether the finite entry slope helps recruitment of new tokens in practice
+is an empirical question; sparsemax has the same property and has not dominated 1.5-entmax.
+
+\paragraph{Adaptive scaling is still required.} Sparsity removes the leakage from irrelevant tokens,
+but the logits themselves drift with $n$ (max of $n$ noisy scores grows like $\sqrt{\log n}$), so a
+fixed threshold is wrong at long $n$; the ASEntmax paper's Table~1 shows nearly all of its gain over
+plain entmax comes from the adaptive scale $\delta + \beta(\log n)^{\gamma}$. An adaptive window $d$
+and an adaptive temperature are the same knob to first order (scaling logits by $s$ with window $d$
+equals window $d/s$), so the fair comparison is AS-windowed-Stieltjes vs.\ ASEntmax. Pre-registered
+expectation: parity on the length-generalization ladders within evaluation noise, with the possible
+difference showing up in training robustness rather than in the OOD cells.
 
 \end{document}
 

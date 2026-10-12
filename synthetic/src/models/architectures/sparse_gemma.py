@@ -198,6 +198,13 @@ class SparseGemma2Attention(Gemma2Attention):
                 attn_scale_proj_bias = getattr(config, "attn_scale_proj_bias", False)
                 self.attn_scale_beta_proj = nn.Linear(self.hidden_size, self.num_scaled_heads, bias=attn_scale_proj_bias)
                 self.attn_scale_gamma_proj = nn.Linear(self.hidden_size, self.num_scaled_heads, bias=attn_scale_proj_bias)
+                # attn_scale_zero_init (fork, Sep 23): start the scaler at delta + eps for every query
+                # (weights 0, gamma bias 0, beta bias softplus^-1(eps)), i.e. as plain entmax, and let
+                # the scale be learned from there. With the default HF init (N(0, 0.02)) the scaler
+                # at step 0 has median 1.7 and p95 5-11x at n = 64..4096, which makes ~5% of query rows
+                # near-hard-max from the first step (0 of 10 MQMTAR runs escaped the loss plateau).
+                # Applied in _zero_init_scale() after HF post_init() so it is not overwritten.
+                self.attn_scale_zero_init = float(getattr(config, "attn_scale_zero_init", 0.0) or 0.0)
             elif self.attn_scale_type == "nakanishi":
                 self.attn_scale_beta = nn.Parameter(torch.empty(1, self.num_scaled_heads, 1, 1).normal_(1.0, 0.01))
             else:
@@ -237,31 +244,44 @@ class SparseGemma2Attention(Gemma2Attention):
             self.topk_attn = AttentionNoCache(nn.Softmax(-1))
             self.topk_args = {'topk': config.topk_size}
         elif self.attn_type == "stieltjes":
-            # Dense Stieltjes mapping p_j ∝ (λ - s_j)^{-q}. NAPE/ALiBi bias and
-            # the causal mask are added to the logits exactly as in the eager
-            # entmax path. `stieltjes_impl` selects the implementation:
-            #   triton (default): fused flash kernel (normalize=True,
-            #          ift_grad=True — same semantics as eager, verified to
-            #          1e-6 fwd/bwd) for the square, right-padded case
-            #          (training steps and unpadded prefill); decode steps and
-            #          left-padded generation batches fall back to eager.
-            #   eager : stieltjes_eager.stieltjes_normalize everywhere —
-            #          bracketed solver, exact implicit-function gradient,
-            #          materialises q_len x k_len fp32 scores (OOMs at ~4k).
+            # Stieltjes mapping p_j ∝ [(λ - s_j)^{-q} - c]_+, c = d^{-q}; d = stieltjes_window
+            # (None/0 = dense). NAPE/ALiBi bias and the causal mask are added to the logits
+            # exactly as in the eager entmax path. `stieltjes_impl`:
+            #   triton (default): fused flash kernel (same semantics as eager, verified
+            #          to 1e-6 fwd/bwd by tests/test_stieltjes_triton_alibi.py) for the
+            #          square, right-padded case (training steps and unpadded prefill);
+            #          decode steps and left-padded generation batches fall back to eager.
+            #   eager : stieltjes_eager.stieltjes_normalize everywhere — materialises
+            #          q_len x k_len fp32 scores (OOMs at ~4k).
             # Both keep use_fast_attn off (the entmax/flash paths don't apply).
             self.use_fast_attn = False
             self.stieltjes_q = float(getattr(config, "stieltjes_q", 4.0))
             self.stieltjes_num_iter = int(getattr(config, "stieltjes_num_iter", 30))
             self.stieltjes_impl = str(getattr(config, "stieltjes_impl", "triton"))
+            w = getattr(config, "stieltjes_window", None)
+            self.stieltjes_window = None if (w is None or float(w) <= 0) else float(w)
             if self.stieltjes_impl not in ("eager", "triton"):
                 raise ValueError(f"unknown stieltjes_impl {self.stieltjes_impl!r}")
             # ALiBi bias is built per call by make_bias_window (see forward).
-            self.attn_func = lambda x: stieltjes_normalize(x, q=self.stieltjes_q, num_iter=self.stieltjes_num_iter)
+            self.attn_func = lambda x: stieltjes_normalize(
+                x, q=self.stieltjes_q, num_iter=self.stieltjes_num_iter, window=self.stieltjes_window)
         elif self.attn_type == "stick-break":
             pass
         else:
             raise NotImplementedError
 
+
+    def _zero_init_scale(self):
+        """Scaler = delta + eps for every query at init (eps = attn_scale_zero_init)."""
+        eps = self.attn_scale_zero_init
+        with torch.no_grad():
+            self.attn_scale_beta_proj.weight.zero_()
+            self.attn_scale_gamma_proj.weight.zero_()
+            if self.attn_scale_gamma_proj.bias is not None:
+                self.attn_scale_gamma_proj.bias.zero_()
+            if self.attn_scale_beta_proj.bias is not None:
+                # softplus^-1(eps) = log(exp(eps) - 1)
+                self.attn_scale_beta_proj.bias.fill_(math.log(math.expm1(eps)))
 
     def _apply_length_scaling(self, query_states, hidden_states, q_len, k_len):
         """Apply length-based adaptive attention temperature to non-ALiBi heads."""
@@ -315,8 +335,7 @@ class SparseGemma2Attention(Gemma2Attention):
         slopes = self.alibi_slopes.to(q.device) if (self.apply_nape and self.alibi_slopes is not None) else None
         return triton_stieltjes_attention(
             q, k, v, causal=True, sm_scale=self.qk_scale, stieltjes_q=self.stieltjes_q,
-            num_iter=self.stieltjes_num_iter, normalize=True, ift_grad=True, solver="nr",
-            alibi_slopes=slopes,
+            num_iter=self.stieltjes_num_iter, window=self.stieltjes_window, alibi_slopes=slopes,
         )
 
     def forward(
@@ -589,3 +608,8 @@ class SparseGemma2ForCausalLM(Gemma2ForCausalLM):
 
         # Initialize weights and apply final processing
         self.post_init()
+        # Fork: zero-init of the adaptive attention scale (see SparseGemma2Attention.__init__).
+        # Must run after post_init(), which re-inits every nn.Linear with N(0, initializer_range).
+        for m in self.modules():
+            if isinstance(m, SparseGemma2Attention) and getattr(m, "attn_scale_zero_init", 0.0) > 0:
+                m._zero_init_scale()
