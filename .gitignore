@@ -232,3 +232,4 @@ synthetic/wandb/
 *.ckpt
 checkpoints/
 *.pdf
+AGENTS.md
