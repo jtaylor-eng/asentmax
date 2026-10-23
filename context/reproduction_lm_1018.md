@@ -134,6 +134,42 @@ AdaSplash 1.5-entmax kernel (vendored from this repo, NAPE slopes), 10 Halley it
   4. LR: ours selects 3e-3; theirs is a single 3e-4.
   Caveats on our numbers: single seed, small model, LR grid capped at 3e-3, 8x extrapolation only.
 
+## 4c. Exponential ALiBi slopes (the paper's LM setting), array 8000083, Oct 23, commit cf1f03b
+
+`_xs` rows: NAPE ALiBi heads use 2^(-8h/4) = 0.25, 0.0625, 0.0156, 0.0039 instead of 1, 1/2, 1/3, 1/4. Nothing else changed.
+
+| row | 7.5e-4 | 1.5e-3 | 3e-3 | best@512 | val@4096 (sel.) | 4096 - 512 | per LR | last-256 @4096 |
+|---|---:|---:|---:|---:|---:|---:|---|---:|
+| softmax (1/h) | 3.7924 | 3.7587 | 3.7531 | 3.7531 | 3.820 | +0.064 | +0.096 / +0.081 / +0.064 | 3.99 |
+| softmax_xs | 3.8136 | 3.7729 | 3.7616 | 3.7616 | 3.740 | -0.024 | +0.087 / -0.014 / -0.024 | 3.81 |
+| entmax (1/h) | 3.7984 | 3.7620 | 3.7615 | 3.7615 | 3.879 | +0.115 | +0.194 / +0.221 / +0.115 | 4.12 |
+| entmax_xs | 3.7947 | 3.7558 | 3.7653 | 3.7558 | 3.751 | -0.008 | -0.034 / -0.008 / -0.034 | 3.84 |
+| asentmax_zi (1/h) | 3.8018 | 3.7688 | 3.7652 | 3.7652 | 3.898 | +0.137 | +0.147 / +0.128 / +0.137 | 4.16 |
+| asentmax_zi_xs | 3.7948 | 3.7616 | 3.7675 | 3.7616 | 3.738 | -0.020 | -0.014 / -0.020 / -0.046 | 3.82 |
+
+- The slope choice dominated the earlier length result. With the paper's slopes all three maps extrapolate to 8x
+  with NO loss increase (4096 within -0.05..+0.09 of 512 at every LR except softmax_xs at 7.5e-4); the last-256
+  positions at 4096 sit at 3.81-3.84 vs 3.99-4.16 before. The ALiBi heads now attend 17-2300 keys back (entropy
+  1.8-3.3) instead of 4-256 (0.75-1.5), so the long-range work no longer falls on the NoPE heads alone.
+- At 512 the ordering flips: entmax_xs 3.7558 and asentmax_xs 3.7616 now BEAT softmax_xs 3.7616/3.7729 at the
+  matched LR (entmax -0.017 at 1.5e-3, -0.004 at 7.5e-4; +0.004 at 3e-3). Softmax lost 0.009 from the slope
+  change; entmax/ASEntmax gained 0.004-0.006. Single seed, so the 0.00-0.02 margins are suggestive, not firm.
+- At 4096 (selected LRs): asentmax_xs 3.738 < softmax_xs 3.740 < entmax_xs 3.751, all within 0.013. At 3e-3,
+  where all three are directly comparable, asentmax_xs 3.76 / entmax_xs 3.79 / softmax_xs 3.81 in the last-256
+  bucket, i.e. the paper's ordering (ASEntmax < entmax < softmax) appears at long range, by 0.02-0.05.
+- The AS scale now helps entmax at 4096 (-0.013 vs entmax_xs at selected LRs, -0.03 in the tail at 3e-3) where
+  with 1/h slopes it hurt. Consistent with the paper's claim that the scale matters at long range.
+- Reading: our earlier "sharper maps extrapolate worse" was an artifact of the 1/h slopes. Under the paper's
+  slopes we see the paper's qualitative ordering at 8x, with much smaller margins than their Table 3
+  (their 16K ArXiv ppl: softmax 12.7 vs entmax 10.1, ~0.23 nats) and no clear winner at the train length.
+  Remaining differences from the paper: 51M vs 420M, 1B vs 7B tokens, T=512 vs 2048, FineWeb vs ArXiv/PubMed.
+- Predictions scored: all three rows improve at 4096 (75%) right; entmax-softmax gap shrinks/reverses (55%)
+  right; entmax beats softmax at 4096 as in the paper (35%) wrong at selected LRs (+0.011), right in the
+  long-position tail at 3e-3; ordering at 512 unchanged with softmax ahead (65%) wrong, entmax ahead.
+- Stieltjes rows were not rerun with exp slopes. Given the slope effect, the §1-2 Stieltjes extrapolation numbers
+  are also slope-confounded; the §1 train-length deficit (+0.02 dense/windowed) is probably not, since the softmax
+  control moved only 0.009.
+
 ## 5. Next options
 
 a. LR bracket: 6e-3 for softmax, stieltjes_q4, aswstieltjes (3 runs, ~5 GPU-h), since 3e-3 is the grid edge.
