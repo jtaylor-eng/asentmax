@@ -238,6 +238,46 @@ Same 2M val tokens per length. Selected LR per row (by val@512). Attention stats
   Our result is the non-contradicting version: on text without long-range structure, no map gains past 2-4x,
   and the sparse maps with bounded support degrade least (windowed Stieltjes) or about like softmax (ASEntmax).
 
+## 4g. Long-document ladder: Pile ArXiv papers (job 8122598, Oct 27; `arxiv.json`, plot `arxiv_lengths.png`)
+
+128 papers from the Pile ArXiv test split (ArmelR/the-pile-splitted, LaTeX source), first 16385 GPT-2 tokens of each
+(`nanoGPT/data/arxiv_long/`, prep script in repo). At each L every row scores the first L+1 tokens of every paper,
+so longer context only adds earlier text of the same paper (unlike the FineWeb ladder, where it adds other
+documents). Absolute losses are ~1 nat above FineWeb (LaTeX is out of distribution for these models); only the
+between-row comparison and the shape vs L are meaningful. Not comparable to the paper's ArXiv ppl numbers
+(different training data, tokenizer, scale).
+
+Mean loss over the first L tokens, selected LR:
+
+| row (exp slopes) | 512 | 1024 | 2048 | 4096 | 8192 | 16384 | 16k - 2k | pos 12-16k @16k |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| softmax | 4.725 | 4.576 | 4.499 | 4.634 | 4.745 | 4.829 | +0.33 | 4.90 |
+| entmax | 4.709 | 4.550 | 4.475 | 4.626 | 4.757 | 4.865 | +0.39 | 4.98 |
+| ASEntmax | 4.678 | 4.530 | 4.475 | 4.645 | 4.785 | 4.881 | +0.41 | 4.98 |
+| Stieltjes q4 dense | 4.695 | 4.565 | 4.578 | 4.999 | 5.515 | 5.976 | +1.40 | 6.50 |
+| Stieltjes q4 d=2 windowed | 4.656 | 4.510 | 4.417 | **4.460** | **4.474** | **4.494** | **+0.08** | **4.51** |
+| Stieltjes q2 d=4 + AS | 4.624 | 4.474 | 4.440 | 4.700 | 4.911 | 5.089 | +0.65 | 5.29 |
+
+16384 at every LR (7.5e-4 / 1.5e-3 / 3e-3): softmax 5.43/4.73/4.83; entmax 4.69/4.87/4.53; ASEntmax
+4.85/4.88/4.44; dense 5.70/5.74/5.98; windowed q4/d2 4.69/4.49/4.33; AS-windowed 5.05/4.91/5.09.
+
+- Through 2048 every row improves with context (the papers do carry usable long-range signal). Past 2048 every
+  row except windowed Stieltjes gets worse, and by position (right panel of the plot) softmax/entmax/ASEntmax sit
+  at ~4.9-5.0 from position 4k onward vs ~4.5 at positions 1-2k: the extra context hurts them more than it helps.
+- Windowed Stieltjes q4/d2 is the only row whose loss stays flat: 4.42 at 2k -> 4.49 at 16k, and its loss by
+  position is ~4.5 everywhere out to 16k. At 16k it is 0.34 nats (29% ppl) better than softmax at the selected
+  LRs and best at every LR (4.33 at 3e-3 vs ASEntmax's best 4.44). This is a much larger margin than the 0.02 on
+  FineWeb, because here the long context is the same paper and the dense maps' dispersion costs real information.
+- The AS scale does not help on this data: ASEntmax = entmax within 0.02 at 16k; AS-windowed q2/d4 degrades badly
+  (+0.65), its NoPE support grows 104 -> 298 vs 55 -> 130 for q4/d2. Dense Stieltjes collapses (+1.4; NoPE
+  entropy 9.39 of 9.57 max = uniform).
+- Caveats: 1 seed; LR selection on FineWeb @512, and the 16k ranking is LR-sensitive for softmax/entmax (softmax
+  at 7.5e-4 is 5.43); models never trained on LaTeX; 128 papers.
+- Relation to the paper's Table 3 (ArXiv ppl still decreasing at 16K for entmax/ASEntmax): we see the
+  "decreasing to 2k then flat" shape only for windowed Stieltjes, and no map improves past 2k. Their 420M
+  models trained at 2048 may be using context that our 51M T=512 models cannot.
+- Prediction (55% windowed q4/d2 best at 16k): right, and by far more than the FineWeb margin suggested.
+
 ## 4e. Where this leaves the LM comparison (all exp-slope, 1 seed, 51M, 1B tokens, T=512)
 
 | question | answer |
@@ -245,6 +285,7 @@ Same 2M val tokens per length. Selected LR per row (by val@512). Attention stats
 | any map better than softmax at the train length? | no row beats softmax by more than 0.006; all within 0.008 |
 | best extrapolation to 8x? | windowed Stieltjes q4/d2 (3.720), then ASEntmax 3.738, softmax 3.740, entmax 3.751 |
 | to 32x (16k)? | windowed Stieltjes 3.842, softmax 3.862, ASEntmax 3.906, entmax 3.956, AS-windowed 4.014, dense 4.198 (§4f); all degrade past 8x |
+| on real long documents (ArXiv, §4g)? | windowed Stieltjes is the only row that stays flat past 2k: 4.49 at 16k vs softmax 4.83, ASEntmax 4.88 (0.34 nats); dense Stieltjes collapses |
 | worst? | dense Stieltjes q4 (3.871): dense heavy tail disperses, as the proposal's own theory predicts |
 | does the AS scale help? | entmax: yes at 4096 (-0.013). windowed Stieltjes: no (q2/d4+AS +0.07 behind q4/d2) |
 | cost | Stieltjes 1.9x softmax step time (15 sweeps); entmax 1.6x |
