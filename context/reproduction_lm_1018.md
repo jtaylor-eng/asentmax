@@ -204,12 +204,47 @@ All six exp-slope rows, best LR by val@512; the Stieltjes rows' 1/h numbers from
   within 0.005 of ASEntmax at 512 (55%) right (-0.006); windowed NoPE support ~2x from 512 to 4096 (80%) partly
   wrong: 1.4x for q4/d2, 2.1x for AS q2/d4.
 
+## 4f. Ladder to 16k (32x) for the exp-slope rows (job 8118074, Oct 27; `lengths_16k.json`, plot `lengths_16k.png`)
+
+Same 2M val tokens per length. Selected LR per row (by val@512). Attention stats on 2 sequences.
+
+| row (exp slopes) | 512 | 1024 | 2048 | 4096 | 8192 | 16384 | 16k - 512 | last-1k @16k | NoPE support 512 / 4k / 16k |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| softmax | 3.764 | 3.715 | 3.706 | 3.740 | 3.799 | 3.862 | +0.098 | 3.97 | all / all / all (ent 7.92 of 9.57) |
+| entmax | 3.759 | 3.711 | 3.707 | 3.751 | 3.837 | 3.956 | +0.197 | 4.16 | 91 / 319 / 615 |
+| ASEntmax | 3.758 | 3.709 | 3.700 | 3.738 | 3.812 | 3.906 | +0.148 | 4.06 | 92 / 318 / 634 |
+| Stieltjes q4 dense | 3.765 | 3.720 | 3.744 | 3.871 | 4.043 | 4.198 | +0.433 | 4.41 | all / all / all (ent 9.41, near uniform) |
+| Stieltjes q4 d=2 windowed | 3.767 | 3.718 | 3.704 | **3.720** | **3.766** | **3.842** | **+0.076** | 3.98 | 49 / 69 / 84 |
+| Stieltjes q2 d=4 + AS | 3.752 | 3.705 | 3.716 | 3.791 | 3.897 | 4.014 | +0.262 | 4.20 | 96 / 195 / 267 |
+
+16384 at every LR (7.5e-4 / 1.5e-3 / 3e-3): softmax 4.053/3.843/3.862; entmax 3.917/3.956/3.856; ASEntmax
+3.963/3.906/3.819; dense 4.181/4.089/4.198; windowed q4/d2 3.968/3.842/3.833; AS-windowed 4.117/3.987/4.014.
+
+- Everything degrades past 8x; nothing holds flat to 16k. The best row (windowed q4/d2) is +0.076 at 32x, softmax
+  +0.098. Expected on FineWeb: pages are a few hundred to a few k tokens, so most of a 16k window is unrelated
+  documents and there is little long-range signal to use. This ladder measures robustness, not gain.
+- Windowed Stieltjes q4/d2 stays the best row at 4k, 8k and 16k at its selected LR, by 0.02 over softmax; but
+  at 3e-3 ASEntmax (3.819) edges it (3.833), and at 7.5e-4 entmax is best. Margins of 0.01-0.02 on one seed:
+  the ranking among {windowed Stieltjes, softmax, ASEntmax} is not resolved. Entmax without the scale is clearly
+  behind softmax at 16k (+0.10 at selected LRs); the AS scale recovers half of that (-0.05), consistent with
+  the paper's claim that the scale matters at long range, though here neither beats softmax.
+- Mechanism matches the earlier picture. Windowed q4/d2's NoPE support grows 49 -> 84 keys over 32x (1.7x);
+  entmax's grows 91 -> 615 (6.8x); the AS-windowed row's 96 -> 267 (2.8x). Dense rows attend to everything and
+  go near-uniform (softmax entropy 7.92 of 9.57 max, dense Stieltjes 9.41). The ALiBi heads are flat in entropy
+  from 512 to 16k for every row (e.g. windowed 1.74 -> 1.79), so the degradation is all in the NoPE heads.
+- Dense Stieltjes q4 is the worst row at every length past 2k (+0.43 at 16k), as before.
+- Compared with the paper's Table 3 (ArXiv ppl decreasing out to 16K for entmax/ASEntmax): not reproduced here
+  for any map, softmax included. The paper's eval documents are >=16K tokens of a single paper; ours are not.
+  Our result is the non-contradicting version: on text without long-range structure, no map gains past 2-4x,
+  and the sparse maps with bounded support degrade least (windowed Stieltjes) or about like softmax (ASEntmax).
+
 ## 4e. Where this leaves the LM comparison (all exp-slope, 1 seed, 51M, 1B tokens, T=512)
 
 | question | answer |
 |---|---|
 | any map better than softmax at the train length? | no row beats softmax by more than 0.006; all within 0.008 |
 | best extrapolation to 8x? | windowed Stieltjes q4/d2 (3.720), then ASEntmax 3.738, softmax 3.740, entmax 3.751 |
+| to 32x (16k)? | windowed Stieltjes 3.842, softmax 3.862, ASEntmax 3.906, entmax 3.956, AS-windowed 4.014, dense 4.198 (§4f); all degrade past 8x |
 | worst? | dense Stieltjes q4 (3.871): dense heavy tail disperses, as the proposal's own theory predicts |
 | does the AS scale help? | entmax: yes at 4096 (-0.013). windowed Stieltjes: no (q2/d4+AS +0.07 behind q4/d2) |
 | cost | Stieltjes 1.9x softmax step time (15 sweeps); entmax 1.6x |
