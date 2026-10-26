@@ -170,6 +170,55 @@ AdaSplash 1.5-entmax kernel (vendored from this repo, NAPE slopes), 10 Halley it
   are also slope-confounded; the §1 train-length deficit (+0.02 dense/windowed) is probably not, since the softmax
   control moved only 0.009.
 
+## 4d. Stieltjes rows with exponential slopes (array 8098758, Oct 26, commit cf1f03b, 15 Newton sweeps)
+
+All six exp-slope rows, best LR by val@512; the Stieltjes rows' 1/h numbers from §1-2 for reference.
+
+| row (exp slopes) | 7.5e-4 | 1.5e-3 | 3e-3 | best@512 | vs softmax_xs | val@4096 | 4096 - 512 | per LR | last-256 @4096 |
+|---|---:|---:|---:|---:|---:|---:|---:|---|---:|
+| softmax_xs | 3.8136 | 3.7729 | 3.7616 | 3.7616 | - | 3.740 | -0.024 | +0.087 / -0.014 / -0.024 | 3.81 |
+| entmax_xs | 3.7947 | 3.7558 | 3.7653 | 3.7558 | -0.006 | 3.751 | -0.008 | -0.034 / -0.008 / -0.034 | 3.84 |
+| asentmax_zi_xs | 3.7948 | 3.7616 | 3.7675 | 3.7616 | 0.000 | 3.738 | -0.020 | -0.014 / -0.020 / -0.046 | 3.82 |
+| stieltjes_q4_xs | 3.8104 | 3.7715 | 3.7615 | 3.7615 | 0.000 | 3.871 | +0.106 | +0.097 / +0.045 / +0.106 | 4.09 |
+| wstieltjes_q4_d2_xs | 3.7931 | 3.7632 | 3.7671 | 3.7632 | +0.002 | **3.720** | **-0.047** | -0.017 / -0.047 / -0.044 | **3.76** |
+| aswstieltjes_q2_d4_zi_xs | 3.8033 | 3.7657 | 3.7553 | **3.7553** | -0.006 | 3.791 | +0.039 | +0.035 / +0.026 / +0.039 | 3.92 |
+
+1/h -> exp, per Stieltjes row (best@512; 4096-512): dense 3.7721 -> 3.7615 (+0.53 -> +0.11); windowed q4/d2
+3.7776 -> 3.7632 (+0.25 -> -0.05); AS-windowed q2/d4 3.7542 -> 3.7553 (+0.22 -> +0.04). Softmax: 3.7531 -> 3.7616.
+
+- Train length: all six rows within 0.008 of each other (3.7553..3.7632). The §1 Stieltjes deficit is gone:
+  dense and windowed q4 gained 0.011-0.014 from the slope change while softmax lost 0.009. Single seed; these
+  margins are below what one seed can resolve.
+- 4096: windowed Stieltjes q4/d2 is the best row of all six (3.720; last-256 3.76), ahead of ASEntmax 3.738,
+  softmax 3.740, entmax 3.751. Same ordering at the shared LRs 1.5e-3 and 3e-3 (3.720/3.725 vs 3.738/3.718 for
+  ASEntmax). Its NoPE-head support is the smallest and grows least: 48 -> 67 keys (entmax 88 -> 316).
+- Dense Stieltjes q4 is still the worst at 4096 (+0.106; NoPE entropy 7.68 of 8.18 max at 4096, i.e. near
+  uniform): the dispersion failure is a property of the dense map and survives the slope fix, though the slopes
+  cut the damage 5x (+0.53 -> +0.11).
+- AS-windowed q2/d4 is best at 512 (3.7553) but +0.039 at 4096, behind the un-scaled windowed q4/d2 row and the
+  three non-Stieltjes rows. Its NoPE support grows 94 -> 195. The adaptive scale that helps entmax (asentmax_xs
+  -0.013 vs entmax_xs) hurts windowed Stieltjes here; the q2 vs q4 difference is confounded with it (not run: q4/d2
+  + AS, q2/d4 without AS).
+- Predictions (§4c follow-up) scored: all Stieltjes rows within +0.05 at 4096 (60%) wrong, dense +0.106; dense
+  worst at 4096 (70%) right; dense/windowed train-length deficit >= 0.015 persists (65%) wrong, gone; AS-windowed
+  within 0.005 of ASEntmax at 512 (55%) right (-0.006); windowed NoPE support ~2x from 512 to 4096 (80%) partly
+  wrong: 1.4x for q4/d2, 2.1x for AS q2/d4.
+
+## 4e. Where this leaves the LM comparison (all exp-slope, 1 seed, 51M, 1B tokens, T=512)
+
+| question | answer |
+|---|---|
+| any map better than softmax at the train length? | no row beats softmax by more than 0.006; all within 0.008 |
+| best extrapolation to 8x? | windowed Stieltjes q4/d2 (3.720), then ASEntmax 3.738, softmax 3.740, entmax 3.751 |
+| worst? | dense Stieltjes q4 (3.871): dense heavy tail disperses, as the proposal's own theory predicts |
+| does the AS scale help? | entmax: yes at 4096 (-0.013). windowed Stieltjes: no (q2/d4+AS +0.07 behind q4/d2) |
+| cost | Stieltjes 1.9x softmax step time (15 sweeps); entmax 1.6x |
+
+The one Stieltjes result worth following up is windowed q4/d2 at 4096 (-0.02 vs softmax, -0.03 vs entmax,
+single seed). Minimum to make it a claim: 2 more seeds of softmax_xs, entmax_xs, asentmax_zi_xs,
+wstieltjes_q4_d2_xs at their selected LRs (8 runs, ~13 GPU-h), plus wstieltjes q4/d2 + AS to separate the
+scale from q (3 runs).
+
 ## 5. Next options
 
 a. LR bracket: 6e-3 for softmax, stieltjes_q4, aswstieltjes (3 runs, ~5 GPU-h), since 3e-3 is the grid edge.
