@@ -1,4 +1,7 @@
-# LM stages 0-2 results (Oct 28, partial): diagnostics, seeds, LR bracket; retry of 17 failed runs pending
+# LM stages 0-2 results (Oct 28): diagnostics, seeds, AS disentangle, q x d grid
+
+**Complete as of Oct 28 12:00** (retry array 8156274 finished, 17/17). Sections 1-7 below were written on the partial
+results; §8 adds the retry and is the summary. Figure: `nanoGPT/results/lm1012/stages_1028.png`.
 
 Plan: lm_stages_1027_plan.md. Prior results: reproduction_lm_1018.md (§4g: windowed Stieltjes q4/d2 0.34 nats
 better than softmax at 16k on ArXiv papers, 1 seed). Code nanoGPT `stieltjes_lm` @ 7ab1523.
@@ -93,6 +96,99 @@ stand. Prediction 5 right for these two (windowed 6e-3 pending). Note softmax @6
 | 8 | no inference-time d change improves 16k by > 0.05 | right (all d changes hurt; q6 gains 0.046 at one LR) |
 | 9 | capped softmax within 0.1 of windowed at 8k | wrong (0.31 behind) |
 
-## 7. Pending (array 8156274, diag 8156275)
-wstieltjes_q4_d2_xs seeds 1, 2 and 6e-3; aswstieltjes_q4_d2_zi_xs and wstieltjes_q2_d4_xs at 3 LRs; stage-2
-q{3,4,6} x d{1.5,2,3}; gradient probe at 4096 incl. dense row.
+## 7. Retry (array 8156274): all 17 completed; gradient probe at 4096 still OOMs (not rerun; the 2048 results stand)
+
+## 8. Seeds complete: the long-context gain is real and the mechanism is variance, not just mean
+
+ArXiv papers, selected LR, 3 seeds each (1337, 1, 2):
+
+| row | val@512 (mean, sd) | ArXiv 2k | ArXiv 16k (per seed) | mean | sd | rise 2k -> 16k per seed |
+|---|---|---:|---|---:|---:|---|
+| softmax @3e-3 | 3.760 (0.003) | 4.44 | 4.83 / 4.56 / 4.85 | 4.748 | 0.160 | +0.33 / +0.18 / +0.42 |
+| ASEntmax @1.5e-3 | 3.761 (0.004) | 4.43 | 4.88 / 4.65 / 4.53 | 4.687 | 0.179 | +0.41 / +0.24 / +0.12 |
+| windowed q4/d2 @1.5e-3 | 3.763 (0.003) | 4.37 | 4.49 / 4.47 / 4.37 | **4.446** | **0.066** | +0.08 / +0.11 / +0.04 |
+
+- Windowed Stieltjes beats softmax at 16k by 0.30 nats on the seed means (Welch t = 3.0, df 2.7; ~p 0.05
+  one-sided) and ASEntmax by 0.24 (t = 2.2, not significant at n = 3). Every windowed seed is below every
+  softmax and ASEntmax seed at 16k. Prediction 1 (>= 0.2 in all 3 seeds vs softmax): the per-seed-pair minimum
+  gap is 4.563 - 4.494 = 0.07, so wrong as stated, but the mean gap is 0.30.
+- The clearer statement is about the rise from 2k to 16k: windowed +0.075 (sd 0.03) vs softmax +0.31 (sd 0.12)
+  and ASEntmax +0.26 (sd 0.14). Windowed Stieltjes' extrapolation is both smaller and 4x less variable.
+- FineWeb 16k: windowed 3.87 (sd 0.05) vs softmax 3.91 (0.09) vs ASEntmax 3.90 (0.01): same direction, small.
+- val@512: identical across rows (3.760 / 3.761 / 3.763, sd 0.003). No map costs anything at the train length.
+
+## 9. AS disentangle (1 seed, 3 LRs): the collapse was q=2, not the scale
+
+ArXiv 16k (and 2k -> 16k rise) by LR:
+
+| row | 7.5e-4 | 1.5e-3 | 3e-3 | NoPE support 512 -> 16k (1.5e-3) |
+|---|---|---|---|---|
+| q4 d2 | 4.69 (+0.26) | 4.49 (+0.08) | 4.33 (-0.04) | 55 -> 130 |
+| q4 d2 + AS | 4.79 (+0.36) | 4.43 (+0.07) | 4.62 (+0.20) | 39 -> 89 |
+| q2 d4 | 5.03 (+0.50) | 5.08 (+0.53) | 5.69 (+1.19) | 90 -> 256 |
+| q2 d4 + AS | 5.05 (+0.57) | 4.91 (+0.44) | 5.09 (+0.65) | 91 -> 243 |
+
+- q2/d4 without the scale collapses as badly as with it (worse at 3e-3). The scale is not the cause;
+  prediction 3 (AS is the culprit, 60%) wrong, prediction 4 (q4/d2+AS degrades like q2/d4+AS, 55%) wrong:
+  q4/d2+AS is fine at 1.5e-3 (4.43, the best single number in this table besides q4/d2 @3e-3) and only
+  mediocre at 3e-3.
+- The AS scale is roughly neutral for windowed Stieltjes: it helps q2/d4 a little, and for q4/d2 it is
+  within LR noise. The gradient probe (§4) had this right: the q2/d4 model "wanted" a larger q.
+- Mechanism: the q2 heavy tail admits 2-3x more keys into the window (NoPE support 90 -> 256 vs 55 -> 130)
+  and the support grows faster with length. Window size, not the scale, sets long-context behaviour.
+- 6e-3 for windowed q4/d2: 3.7818 at 512 and 5.23 at 16k ArXiv, clearly too high. Prediction 5 right for all three.
+
+## 10. q x d grid (lr 1.5e-3, 1 seed): tighter window extrapolates better, costs a little at 512
+
+ArXiv 16k loss (FineWeb val@512 in brackets):
+
+| | d = 1.5 | d = 2 | d = 3 |
+|---|---|---|---|
+| q = 3 | **4.39** (3.780) | 4.37 (3.766) | 5.06 (3.756) |
+| q = 4 | 4.44 (3.782) | 4.49 (3.763) | 5.01 (3.755) |
+| q = 6 | 4.57 (3.776) | 4.54 (3.764) | 4.60 (3.758) |
+
+NoPE support 512 -> 16k: d 1.5: 14-19 -> 32-48; d 2: 37-89 -> 87-257; d 3: 93-246 -> 272-1571.
+
+- d is the lever. d=3 at q 3-4 collapses like dense (+0.6 over d=2); d=1.5 and d=2 are close. Prediction 6
+  (best at d=1.5, 50%): roughly a tie between d 1.5 and 2, so half right.
+- q matters less, and lighter is not better: q=6 is worst at d <= 2 (its support grows 3-10x faster than q=3/4
+  at the same d, because a lighter tail puts more keys within the threshold). q=3 is best at every d <= 2.
+  Prediction 7 (q6 within 0.02 of q4, 60%) wrong: q6 is 0.05-0.13 worse at 16k.
+- The 512 cost of a tight window is small but monotone: d 1.5 is +0.017 over d 3, i.e. a real trade-off
+  (3-5 seed-sd). q3/d2 (4.37 at 16k, 3.766 at 512) is the best compromise in this grid; q4/d2 is within noise.
+- Best 16k numbers in the whole study are q4/d2 @3e-3 (4.33) and q3/d2 @1.5e-3 (4.37); windowed q3-q4, d 1.5-2
+  all land in 4.37-4.49, i.e. the result is robust to the exact (q, d).
+
+## 11. Predictions, final score
+
+| # | prediction | result |
+|---|---|---|
+| 1 | windowed >= 0.2 better than softmax at 16k in all 3 seeds | wrong as stated (min pairwise 0.07); mean gap 0.30 |
+| 2 | val@512 seed spread <= 0.01 | right |
+| 3 | AS is the culprit for q2/d4's collapse | wrong (q=2 is) |
+| 4 | q4/d2+AS degrades like q2/d4+AS | wrong |
+| 5 | 6e-3 does not win at 512 | right (all three rows) |
+| 6 | best 16k at d=1.5 | half (d 1.5 ~ d 2) |
+| 7 | q6 within 0.02 of q4 | wrong (0.05-0.13 worse) |
+| 8 | no inference-time d change helps | right |
+| 9 | capped softmax within 0.1 of windowed | wrong (0.31 behind) |
+
+3.5 / 9. The misses share a cause: I over-weighted the adaptive scale (the paper's ingredient) and under-weighted
+the window itself. The data say: the window d sets everything; q should be 3-4; the scale is neutral.
+
+## 12. What is now established (51M, 1B tokens, T=512, exp-slope NAPE, FineWeb; ArXiv eval is OOD text)
+
+1. No attention map beats softmax at the train length (val@512 within 0.003 across softmax, ASEntmax, windowed
+   Stieltjes, 3 seeds each).
+2. On long documents, windowed Stieltjes (q 3-4, d 1.5-2) extrapolates with a 2k -> 16k rise of +0.04..+0.11
+   (3 seeds + 4 grid cells) vs +0.18..+0.42 for softmax and +0.12..+0.41 for ASEntmax. Mean gap at 16k: 0.30
+   nats vs softmax (p ~ 0.05, n = 3), 0.24 vs ASEntmax.
+3. The mechanism is bounded support: NoPE-head support grows ~2.4x from 512 to 16k for d <= 2 vs 32x (all
+   keys) for softmax and 6.8x for entmax. Capping softmax to 2048 keys does not reproduce it.
+4. Dense Stieltjes and d >= 3 collapse; the AS scale is neutral; q = 2 (heavy tail) is bad, q = 6 (light tail)
+   is slightly bad, q 3-4 is right.
+5. Cost: 1.9x softmax step time at 15 Newton sweeps; no sparsity exploited in the kernel yet.
+
+Open: scale (stage 4, 125M at T=2048), whether the gain survives training at T=2048 (stage 3), and whether
+non-LaTeX long documents (PG-19) show the same.
