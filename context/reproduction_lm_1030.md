@@ -93,6 +93,32 @@ Selected-LR comparison, with the T=512 3-seed means of the same rows:
   ArXiv, 4.57); softmax prefers 3e-3. The selection rule picked the right LR for each, but the grid is 2 points.
 - Cost at T=2048: softmax 824 ms/step, ASEntmax 1218 (1.5x), windowed Stieltjes ~1600 (1.9x).
 
+## 3c. T=2048 seeds (array 8226422, Oct 31): the stage-3 result holds; ASEntmax's train-length win does not
+
+3 seeds each at the selected LR. Means (sd):
+
+| row | val@2048 | ArXiv 16k | rise 2k -> 16k | PG-19 16k | rise | FineWeb 16k |
+|---|---|---|---|---|---|---|
+| softmax @3e-3 | 3.704 (0.015) | 4.544 (0.062) | +0.19 (0.08) | 4.070 (0.024) | +0.04 (0.01) | 3.692 (0.002) |
+| ASEntmax @1.5e-3 | 3.687 (0.003) | 4.156 (0.085) | -0.14 (0.05) | 4.007 (0.018) | -0.01 (0.01) | 3.719 (0.008) |
+| windowed q3/d2 @1.5e-3 | 3.704 (0.012) | **3.976 (0.017)** | **-0.30 (0.02)** | **3.986 (0.010)** | **-0.04 (0.00)** | 3.721 (0.009) |
+
+Welch t, softmax minus row (n = 3 each): windowed ArXiv 16k +0.57, t = 15; PG-19 +0.08, t = 5.6; ASEntmax ArXiv
++0.39, t = 6.4; PG-19 +0.06, t = 3.6. Windowed vs ASEntmax at ArXiv 16k: +0.18, t = 3.6.
+
+- Train length: softmax seed 2 came in at 3.687, so the softmax mean is 3.704 (sd 0.015) and the ASEntmax edge
+  shrinks to 0.017 (t = 1.9, not significant). Windowed = softmax exactly (3.7035 vs 3.7041). §3a's "ASEntmax
+  beats softmax at the train length" is downgraded to "ASEntmax is the most seed-stable at the train length and
+  possibly 0.01-0.02 better". The T=512 conclusion stands: no map reliably beats softmax at the training length.
+- Long documents: every sparse-map seed improves from 2k to 16k on ArXiv and every softmax seed degrades, with
+  no overlap (windowed 3.96-3.99, ASEntmax 4.06-4.21, softmax 4.49-4.61). Windowed Stieltjes' rise is -0.30 with
+  sd 0.016 across seeds, i.e. the most reproducible number in the study. On PG-19 the same ordering at 5x the
+  seed sd. This is the result; it is now 3 seeds, two datasets, and holds for both sparse maps with windowed
+  Stieltjes ahead of ASEntmax by 0.18 on ArXiv.
+- FineWeb 16k: softmax best by 0.03 (t = 6). Mostly-other-document windows; the dense map's tolerance of
+  irrelevant context is slightly better, consistent with the earlier reading.
+- Stage-4 predictions (reproduction_lm_1031 plan) remain as stated.
+
 ## 3b. Earlier partial note (softmax only)
 
 softmax_xs trained at T=2048 (same 1B tokens, 8 x 2048 x 8 per step), val at the training length:
@@ -123,16 +149,17 @@ softmax_xs trained at T=2048 (same 1B tokens, 8 x 2048 x 8 per step), val at the
 | 6 | q3/d2 3-seed mean within 0.05 of q4/d2, rise < 0.12 all seeds | half (0.033 yes; one seed rises +0.24) |
 
 ## 5. Updated picture (supersedes the version written before stage 3 finished)
-1. T=512: no map beats softmax at the training length (9 seeds across 3 rows within 0.007). T=2048 (1 seed):
-   ASEntmax beats softmax by 0.031 and windowed Stieltjes by 0.007 at val@2048.
+1. No map reliably beats softmax at the training length: T=512 9 seeds within 0.007; T=2048 3 seeds each,
+   windowed = softmax (3.704), ASEntmax 0.017 lower (not significant, t = 1.9).
 2. Long documents, T=512 models: windowed Stieltjes has the smallest 2k -> 16k rise on ArXiv (0.29 nats below
    softmax at 16k, 6 vs 3 seeds) and ties softmax / ASEntmax on PG-19.
-3. Long documents, T=2048 models: the sparse maps' loss keeps FALLING past the training length (windowed
-   4.28 -> 3.99 on ArXiv, ASEntmax 4.30 -> 4.20; both also fall slightly on PG-19) while softmax's rises. At
-   16k ArXiv: windowed 3.99, ASEntmax 4.20, softmax 4.49. This is the paper's qualitative claim, reproduced at
-   51M with their training length, and windowed Stieltjes does it better than their map.
+3. Long documents, T=2048 models (3 seeds each, §3c): the sparse maps' loss keeps FALLING past the training
+   length (windowed 4.28 -> 3.98 on ArXiv, sd 0.02; ASEntmax 4.30 -> 4.16) while softmax's rises (4.35 -> 4.54).
+   At 16k ArXiv: windowed 3.98, ASEntmax 4.16, softmax 4.54 (windowed vs softmax t = 15). PG-19 same ordering,
+   0.08 gap. This is the paper's qualitative claim, reproduced at 51M with their training length, and windowed
+   Stieltjes does it better than their map (0.18 nats, t = 3.6).
 4. The training length matters more than the map for softmax (T=2048 softmax 4.49 vs T=512 4.75 at 16k ArXiv);
    for the sparse maps it unlocks use of long context rather than just tolerance of it.
 5. Dense Stieltjes, q=2, d>=3 and plain entmax degrade on every long-document set at T=512.
-6. Still 1 seed at T=2048 and a 2-point LR grid. Seeds for the three T=2048 rows at their selected LRs
-   (6 runs, ~16 GPU-h with 4 h segments) are the obvious next step before any of §3 is a claim.
+6. The 2-point LR grid at T=2048 is the remaining caveat (sparse rows prefer 1.5e-3, softmax 3e-3; selection
+   picked each row's better point). Stage 4 (125M, T=2048, 2.5B tokens; arrays 8233113-6) tests scale.
